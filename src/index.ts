@@ -4,7 +4,7 @@ import cron from "node-cron";
 import { runAutoRebalanceCheck } from "./services/autoLP";
 
 async function main() {
-  console.log("[RobinhoodBot] Starting bot...");
+  console.log("[HoodBot] Starting bot...");
 
   // ── Auto-rebalance cron: every 5 minutes ──────────────────────────────────
   cron.schedule("*/5 * * * *", async () => {
@@ -36,13 +36,13 @@ async function main() {
   // ── Start bot (long polling) ───────────────────────────────────────────────
   await bot.start({
     onStart: (info) => {
-      console.log(`[RobinhoodBot] Running as @${info.username}`);
-      console.log(`[RobinhoodBot] Chain: Robinhood Mainnet (4663)`);
+      console.log(`[HoodBot] Running as @${info.username}`);
+      console.log(`[HoodBot] Chain: Robinhood Mainnet (4663)`);
     },
   });
 }
 
 main().catch((err) => {
-  console.error("[RobinhoodBot] Fatal error:", err);
+  console.error("[HoodBot] Fatal error:", err);
   process.exit(1);
 });

@@ -1,28 +1,38 @@
 const STEPS = [
   {
     step: "01",
-    title: "Set TELEGRAM_BOT_TOKEN",
-    body: "Create a bot via @BotFather on Telegram. Copy the token and add it as an environment variable: TELEGRAM_BOT_TOKEN",
+    title: "Buat bot via @BotFather",
+    body: "Buka Telegram, cari @BotFather, kirim /newbot. Berikan nama (contoh: HoodBot) dan username (harus diakhiri 'bot', contoh: my_hoodbot). BotFather akan memberikan API Token berupa string seperti: 7412345678:AAHxxxxxxxxxxxxxxxx",
   },
   {
     step: "02",
-    title: "Set DATABASE_URL",
-    body: "Connect the Neon integration (already done if you see stats above). The DATABASE_URL env var is provisioned automatically.",
+    title: "Tambahkan TELEGRAM_BOT_TOKEN",
+    body: 'Salin token dari BotFather. Di v0, klik Settings (atas kanan) → Vars → tambah variabel baru: Key = TELEGRAM_BOT_TOKEN, Value = token kamu. Tanpa env var ini bot tidak bisa jalan.',
   },
   {
     step: "03",
-    title: "Optional: RPC_URL",
-    body: "By default the bot uses https://rpc.mainnet.chain.robinhood.com. Set RPC_URL to a private endpoint for better reliability.",
+    title: "Tambahkan TELEGRAM_BOT_USERNAME (opsional)",
+    body: "Tambahkan env var TELEGRAM_BOT_USERNAME berisi username bot tanpa @ (contoh: my_hoodbot). Ini memunculkan link t.me/... di dashboard supaya mudah diakses.",
   },
   {
     step: "04",
-    title: "Run the bot",
-    body: "Install ts-node globally or use pnpm exec ts-node. Then run: pnpm run bot:dev. The bot polls Telegram and starts the cron scheduler.",
+    title: "DATABASE_URL sudah otomatis",
+    body: "Kalau Neon sudah terkoneksi (terlihat dari stats di atas yang muncul), DATABASE_URL sudah tersedia otomatis. Tidak perlu setting manual.",
   },
   {
     step: "05",
-    title: "Use /start in Telegram",
-    body: "Open your bot in Telegram and send /start to create or import your first wallet. All keys are AES-256-GCM encrypted with your PIN.",
+    title: "Opsional: RPC_URL custom",
+    body: "Default RPC: https://rpc.mainnet.chain.robinhood.com. Untuk reliability lebih baik di produksi, tambah env var RPC_URL dengan endpoint RPC privat Robinhood Chain milikmu.",
+  },
+  {
+    step: "06",
+    title: "Install ts-node lalu jalankan bot",
+    body: "Di terminal server kamu, jalankan: npm install -g ts-node typescript. Lalu masuk ke folder project dan jalankan: pnpm run bot:dev. Bot akan polling Telegram dan cron auto-rebalance akan aktif setiap 5 menit.",
+  },
+  {
+    step: "07",
+    title: "Buka bot di Telegram, kirim /start",
+    body: "Cari username bot kamu di Telegram, kirim /start. Ikuti wizard untuk membuat atau import wallet. Semua private key dienkripsi AES-256-GCM dengan PIN 6 digit kamu — tidak ada yang disimpan plaintext.",
   },
 ] as const;
 
@@ -30,7 +40,7 @@ export function SetupGuide() {
   return (
     <div className="rounded-lg border border-border bg-card">
       <div className="px-4 py-3 border-b border-border">
-        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Setup Guide</h3>
+        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Setup &amp; Integrasi Telegram</h3>
       </div>
       <div className="divide-y divide-border/50">
         {STEPS.map(({ step, title, body }) => (

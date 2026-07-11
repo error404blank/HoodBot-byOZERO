@@ -7,8 +7,8 @@ const _geistSans = Geist({ subsets: ['latin'] })
 const _geistMono = Geist_Mono({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'RobinhoodBot — DeFi LP & NFT Bot',
-  description: 'Telegram bot for automated Uniswap V3/V4 liquidity provision and NFT minting on Robinhood Chain.',
+  title: 'HoodBot — DeFi LP & NFT Bot',
+  description: 'HoodBot: Telegram bot for automated Uniswap V3/V4 liquidity provision and NFT minting on Robinhood Chain.',
 }
 
 export const viewport: Viewport = {

@@ -64,9 +64,9 @@ export default async function Page() {
       <header className="sticky top-0 z-10 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Image src="/logo.png" alt="RobinhoodBot" width={32} height={32} className="rounded-lg" />
+            <Image src="/logo.png" alt="HoodBot" width={32} height={32} className="rounded-lg" />
             <div className="flex flex-col">
-              <span className="font-mono font-bold text-sm text-foreground leading-tight">RobinhoodBot</span>
+              <span className="font-mono font-bold text-sm text-foreground leading-tight">HoodBot</span>
               <span className="font-mono text-xs text-muted-foreground leading-tight">DeFi LP &amp; NFT Telegram Bot</span>
             </div>
           </div>
@@ -201,7 +201,7 @@ export default async function Page() {
         {/* Footer */}
         <footer className="text-center py-4 border-t border-border">
           <p className="text-xs font-mono text-muted-foreground">
-            RobinhoodBot &mdash; Uniswap V3/V4 LP &amp; NFT Minting on Robinhood Chain (4663)
+            HoodBot &mdash; Uniswap V3/V4 LP &amp; NFT Minting on Robinhood Chain (4663)
           </p>
           <p className="text-xs font-mono text-muted-foreground/50 mt-1">
             Data via GeckoTerminal &middot; GMGN.ai &middot; Basedbot &middot; Blockscout

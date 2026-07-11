@@ -61,7 +61,7 @@ bot.command("start", async (ctx) => {
     .text("Settings", "cmd_settings");
 
   await ctx.reply(
-    `Welcome to RobinhoodBot\n\n` +
+    `Welcome to HoodBot\n\n` +
       `Chain: Robinhood Chain (Chain ID 4663)\n` +
       `Features: Uniswap V3/V4 LP, Auto-Rebalance, NFT Minting\n\n` +
       (hasWallet
@@ -74,7 +74,7 @@ bot.command("start", async (ctx) => {
 // ── /help ──────────────────────────────────────────────────────────────────────
 bot.command("help", async (ctx) => {
   await ctx.reply(
-    `RobinhoodBot Commands\n\n` +
+    `HoodBot Commands\n\n` +
       `/start — Main menu\n` +
       `/wallet — Wallet management\n` +
       `/lp — Add/manage liquidity\n` +

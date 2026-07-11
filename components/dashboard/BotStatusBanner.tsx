@@ -11,7 +11,7 @@ export function BotStatusBanner({ botUsername }: BotStatusBannerProps) {
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-primary" />
         </span>
         <span className="text-sm font-mono font-semibold text-foreground">
-          RobinhoodBot
+          HoodBot
         </span>
         <span className="text-xs text-muted-foreground font-mono">
           Robinhood Chain &mdash; ID 4663
