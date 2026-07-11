@@ -1,0 +1,354 @@
+import { Bot, session, InlineKeyboard } from "grammy";
+import { conversations, createConversation } from "@grammyjs/conversations";
+import type { MyContext, SessionData } from "./types";
+import { db } from "../db";
+import { users, wallets, lpPositions, nftMints } from "../db/schema";
+import { eq, and, isNull, desc } from "drizzle-orm";
+import { createWalletConversation } from "./conversations/createWallet";
+import { importWalletConversation } from "./conversations/importWallet";
+import { addLiquidityV3Conversation } from "./conversations/addLiquidityV3";
+import { mintNFTConversation } from "./conversations/mintNFT";
+import { shortAddress } from "../utils/format";
+import { getTopPools, formatUsd } from "../services/data/geckoTerminal";
+import { getTokenSafety, formatSafetyReport } from "../services/data/gmgn";
+import { getUserV3Positions } from "../services/uniswapV3";
+import { isValidAddress } from "../services/wallet";
+
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+  throw new Error("TELEGRAM_BOT_TOKEN is required");
+}
+
+export const bot = new Bot<MyContext>(process.env.TELEGRAM_BOT_TOKEN);
+
+// ── Middleware ─────────────────────────────────────────────────────────────────
+bot.use(
+  session<SessionData, MyContext>({
+    initial: () => ({}),
+  })
+);
+bot.use(conversations<MyContext>());
+
+// ── Register conversations ─────────────────────────────────────────────────────
+bot.use(createConversation(createWalletConversation, "createWallet"));
+bot.use(createConversation(importWalletConversation, "importWallet"));
+bot.use(createConversation(addLiquidityV3Conversation, "addLiquidityV3"));
+bot.use(createConversation(mintNFTConversation, "mintNFT"));
+
+// ── /start ─────────────────────────────────────────────────────────────────────
+bot.command("start", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({
+    where: eq(users.telegramId, telegramId),
+  });
+
+  const hasWallet = user
+    ? (await db.query.wallets.findMany({ where: eq(wallets.userId, user.id) })).length > 0
+    : false;
+
+  const keyboard = new InlineKeyboard()
+    .text("Create Wallet", "cmd_create_wallet")
+    .text("Import Wallet", "cmd_import_wallet")
+    .row()
+    .text("Add LP (V3)", "cmd_add_lp_v3")
+    .text("Add LP (V4)", "cmd_add_lp_v4")
+    .row()
+    .text("My Positions", "cmd_positions")
+    .text("Mint NFT", "cmd_mint_nft")
+    .row()
+    .text("Market Data", "cmd_market")
+    .text("Settings", "cmd_settings");
+
+  await ctx.reply(
+    `Welcome to RobinhoodBot\n\n` +
+      `Chain: Robinhood Chain (Chain ID 4663)\n` +
+      `Features: Uniswap V3/V4 LP, Auto-Rebalance, NFT Minting\n\n` +
+      (hasWallet
+        ? `Your wallet is set up. Choose an action:`
+        : `No wallet found. Create or import one to get started:`),
+    { reply_markup: keyboard }
+  );
+});
+
+// ── /help ──────────────────────────────────────────────────────────────────────
+bot.command("help", async (ctx) => {
+  await ctx.reply(
+    `RobinhoodBot Commands\n\n` +
+      `/start — Main menu\n` +
+      `/wallet — Wallet management\n` +
+      `/lp — Add/manage liquidity\n` +
+      `/positions — View open LP positions\n` +
+      `/fees — View uncollected fees\n` +
+      `/nft — Mint NFTs\n` +
+      `/market — Top pools & token data\n` +
+      `/settings — Bot settings\n` +
+      `/help — This message\n\n` +
+      `Chain: Robinhood Mainnet (4663)\n` +
+      `Explorer: https://robinhoodchain.blockscout.com`
+  );
+});
+
+// ── /wallet ────────────────────────────────────────────────────────────────────
+bot.command("wallet", async (ctx) => {
+  const keyboard = new InlineKeyboard()
+    .text("Create New Wallet", "cmd_create_wallet")
+    .row()
+    .text("Import Wallet", "cmd_import_wallet")
+    .row()
+    .text("My Wallets", "cmd_list_wallets")
+    .row()
+    .text("Back", "cmd_start");
+
+  await ctx.reply("Wallet Management:", { reply_markup: keyboard });
+});
+
+// ── /lp ────────────────────────────────────────────────────────────────────────
+bot.command("lp", async (ctx) => {
+  const keyboard = new InlineKeyboard()
+    .text("Add LP (V3)", "cmd_add_lp_v3")
+    .text("Add LP (V4)", "cmd_add_lp_v4")
+    .row()
+    .text("My Positions", "cmd_positions")
+    .text("Collect Fees", "cmd_collect_fees")
+    .row()
+    .text("Auto-LP Settings", "cmd_auto_lp");
+
+  await ctx.reply("Liquidity Management:", { reply_markup: keyboard });
+});
+
+// ── /positions ─────────────────────────────────────────────────────────────────
+bot.command("positions", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({
+    where: eq(users.telegramId, telegramId),
+  });
+
+  if (!user) {
+    await ctx.reply("No wallet found. Use /start to get started.");
+    return;
+  }
+
+  const positions = await db.query.lpPositions.findMany({
+    where: and(eq(lpPositions.userId, user.id), isNull(lpPositions.closedAt)),
+    orderBy: [desc(lpPositions.createdAt)],
+  });
+
+  if (positions.length === 0) {
+    await ctx.reply("No open LP positions. Use /lp to add liquidity.");
+    return;
+  }
+
+  const lines = positions.map((p, i) => {
+    const autoTag = p.autoRebalance ? " [Auto-Rebalance ON]" : "";
+    return (
+      `${i + 1}. ${p.version.toUpperCase()} | ${shortAddress(p.token0)}/${shortAddress(p.token1)}` +
+      `\n   Fee: ${p.feeTier / 10000}% | Range: [${p.tickLower ?? "?"}, ${p.tickUpper ?? "?"}]` +
+      `\n   Token ID: ${p.tokenId ?? "N/A"}${autoTag}`
+    );
+  });
+
+  await ctx.reply(
+    `Open LP Positions (${positions.length})\n\n${lines.join("\n\n")}\n\nUse /lp to manage positions.`
+  );
+});
+
+// ── /nft ───────────────────────────────────────────────────────────────────────
+bot.command("nft", async (ctx) => {
+  const keyboard = new InlineKeyboard()
+    .text("Mint NFT", "cmd_mint_nft")
+    .row()
+    .text("My Mints", "cmd_my_mints")
+    .row()
+    .text("Auto-Mint Watchers", "cmd_auto_mint");
+
+  await ctx.reply("NFT Tools:", { reply_markup: keyboard });
+});
+
+// ── /market ────────────────────────────────────────────────────────────────────
+bot.command("market", async (ctx) => {
+  const keyboard = new InlineKeyboard()
+    .text("Top Pools", "cmd_top_pools")
+    .text("Token Check", "cmd_token_check")
+    .row()
+    .text("Trending (Basedbot)", "cmd_trending");
+
+  await ctx.reply("Market Data:", { reply_markup: keyboard });
+});
+
+// ── /settings ──────────────────────────────────────────────────────────────────
+bot.command("settings", async (ctx) => {
+  await ctx.reply(
+    "Settings\n\n" +
+      "Coming soon: slippage defaults, gas price preference, auto-LP thresholds.\n\n" +
+      "Use inline menus for per-operation settings."
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Callback query router
+// ─────────────────────────────────────────────────────────────────────────────
+bot.callbackQuery("cmd_create_wallet", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.conversation.enter("createWallet");
+});
+
+bot.callbackQuery("cmd_import_wallet", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.conversation.enter("importWallet");
+});
+
+bot.callbackQuery("cmd_add_lp_v3", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.conversation.enter("addLiquidityV3");
+});
+
+bot.callbackQuery("cmd_add_lp_v4", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "Uniswap V4 LP is available on Robinhood Chain.\n\n" +
+      "V4 uses PoolManager: <code>0x8366a39CC670B4001A1121B8F6A443A643e40951</code>\n\n" +
+      "To add V4 liquidity, specify a PoolKey (tokens + fee + tickSpacing + hooks).\n\n" +
+      "Use /lp_v4 command (in development).",
+    { parse_mode: "HTML" }
+  );
+});
+
+bot.callbackQuery("cmd_mint_nft", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.conversation.enter("mintNFT");
+});
+
+bot.callbackQuery("cmd_positions", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  // Trigger positions command logic
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No wallet found."); return; }
+
+  const positions = await db.query.lpPositions.findMany({
+    where: and(eq(lpPositions.userId, user.id), isNull(lpPositions.closedAt)),
+  });
+
+  if (positions.length === 0) {
+    await ctx.reply("No open positions. Use Add LP to start earning fees.");
+    return;
+  }
+
+  const lines = positions.map((p, i) =>
+    `${i + 1}. ${p.version.toUpperCase()} | ${shortAddress(p.token0)}/${shortAddress(p.token1)} | Tick [${p.tickLower},${p.tickUpper}]`
+  );
+  await ctx.reply(`Open Positions:\n\n${lines.join("\n")}`);
+});
+
+bot.callbackQuery("cmd_list_wallets", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found."); return; }
+
+  const userWallets = await db.query.wallets.findMany({ where: eq(wallets.userId, user.id) });
+
+  if (userWallets.length === 0) {
+    await ctx.reply("No wallets. Use Create or Import.");
+    return;
+  }
+
+  const lines = userWallets.map(
+    (w) => `${w.isActive ? "[ACTIVE] " : ""}${w.name}: <code>${w.address}</code>`
+  );
+  await ctx.reply(`Your Wallets:\n\n${lines.join("\n")}`, { parse_mode: "HTML" });
+});
+
+bot.callbackQuery("cmd_top_pools", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Fetching top pools from GeckoTerminal...");
+  const pools = await getTopPools(10);
+
+  if (pools.length === 0) {
+    await ctx.reply("Could not fetch pool data. GeckoTerminal may not have indexed Robinhood Chain yet.");
+    return;
+  }
+
+  const lines = pools.map(
+    (p, i) =>
+      `${i + 1}. ${p.name}\n   Price: $${parseFloat(p.priceUsd).toFixed(6)}\n   TVL: ${formatUsd(p.tvlUsd)} | 24h Vol: ${formatUsd(p.volumeUsd24h)}`
+  );
+
+  await ctx.reply(`Top Pools on Robinhood Chain:\n\n${lines.join("\n\n")}`);
+});
+
+bot.callbackQuery("cmd_token_check", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Paste a token address to check safety (via GMGN.ai):");
+
+  // Listen for next message
+  bot.on("message:text", async (msgCtx) => {
+    const addr = msgCtx.message.text.trim();
+    if (!isValidAddress(addr)) return;
+    await msgCtx.reply("Checking token safety...");
+    const safety = await getTokenSafety(addr);
+    if (!safety) {
+      await msgCtx.reply("Could not fetch safety data for this token.");
+      return;
+    }
+    await msgCtx.reply(formatSafetyReport(safety));
+  });
+});
+
+bot.callbackQuery("cmd_trending", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "Trending signals from Basedbot:\n\nhttps://basedbot.app\n\nVisit the Basedbot platform for live trending tokens on Robinhood Chain."
+  );
+});
+
+bot.callbackQuery("cmd_my_mints", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found."); return; }
+
+  const mints = await db.query.nftMints.findMany({
+    where: eq(nftMints.userId, user.id),
+    orderBy: [desc(nftMints.mintedAt)],
+  });
+
+  if (mints.length === 0) {
+    await ctx.reply("No mints yet. Use Mint NFT to get started.");
+    return;
+  }
+
+  const lines = mints.slice(0, 10).map(
+    (m, i) =>
+      `${i + 1}. Contract: ${shortAddress(m.contractAddress)}\n   Qty: ${m.quantity} | TX: ${m.txHash ? shortAddress(m.txHash) : "N/A"}`
+  );
+  await ctx.reply(`Recent NFT Mints:\n\n${lines.join("\n\n")}`);
+});
+
+bot.callbackQuery("cmd_collect_fees", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Collect Fees feature — use /positions to see your positions, then select Collect Fees.");
+});
+
+bot.callbackQuery("cmd_auto_lp", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply(
+    "Auto-LP Rebalancer\n\n" +
+      "To enable auto-rebalance on a position, use /positions and toggle it.\n\n" +
+      "The bot checks your positions every 5 minutes and rebalances when price moves outside your range."
+  );
+});
+
+bot.callbackQuery("cmd_auto_mint", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Auto-Mint Watchers\n\nUse /nft > Mint NFT > Auto-watch to set up a new watcher.");
+});
+
+bot.callbackQuery("cmd_start", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Use /start to see the main menu.");
+});
+
+// ── Error handler ──────────────────────────────────────────────────────────────
+bot.catch((err) => {
+  console.error("[Bot Error]", err);
+});
