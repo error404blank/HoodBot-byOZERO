@@ -3,7 +3,7 @@ import { db } from "@/src/db";
 import { lpPositions, nftMints, wallets, users, autoMintWatchers } from "@/src/db/schema";
 import { isNull, count, eq } from "drizzle-orm";
 
-export const revalidate = 0;
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 /**
  * POST /api/telegram/register-webhook
  * Calls Telegram's setWebhook API to register this deployment's webhook URL.

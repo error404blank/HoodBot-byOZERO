@@ -1,26 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
-import { webhookCallback } from "grammy";
-import { bot } from "@/src/bot";
 
-// Secret token to verify requests are from Telegram
-const SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
+// Force dynamic so Next.js never tries to statically evaluate this route.
+// The bot module pulls in grammy + viem + pg which all need runtime env vars.
+export const dynamic = "force-dynamic";
 
 /**
  * POST /api/telegram/webhook
  * Telegram calls this endpoint with each update when webhook mode is active.
- * Register the webhook once via:
- *   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<your-domain>/api/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>"
  */
 export async function POST(req: NextRequest) {
-  // Validate secret header (prevent spoofed updates)
-  if (SECRET) {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
+
+  // Validate secret header to prevent spoofed updates
+  if (secret) {
     const header = req.headers.get("x-telegram-bot-api-secret-token");
-    if (header !== SECRET) {
+    if (header !== secret) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
 
   try {
+    // Dynamically import the bot at request time to avoid static evaluation
+    const { bot } = await import("@/src/bot");
+    const { webhookCallback } = await import("grammy");
     const handler = webhookCallback(bot, "std/http");
     return await handler(req);
   } catch (err) {
