@@ -125,13 +125,12 @@ export function VpsPanel() {
 
         <StepBlock
           number="4"
-          title="Clone repository dari GitHub"
-          description="Buka Settings (atas kanan di v0) lalu klik Git untuk menghubungkan ke GitHub. Setelah repo terhubung, copy URL repo-nya dan jalankan perintah berikut."
+          title="Clone repository HoodBot dari GitHub"
+          description="Perintah ini mengunduh seluruh source code HoodBot ke folder 'hoodbot' di VPS kamu."
           commands={[
-            "git clone https://github.com/USERNAME/NAMA_REPO.git hoodbot",
+            "git clone https://github.com/error404blank/HoodBot-byOZERO.git hoodbot",
             "cd hoodbot",
           ]}
-          note="Ganti USERNAME dan NAMA_REPO dengan milik kamu. URL lengkapnya bisa dilihat di halaman repo GitHub."
         />
 
         <StepBlock
