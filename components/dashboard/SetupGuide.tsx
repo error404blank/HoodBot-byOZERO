@@ -2,37 +2,37 @@ const STEPS = [
   {
     step: "01",
     title: "Buat bot via @BotFather",
-    body: "Buka Telegram, cari @BotFather, kirim /newbot. Berikan nama (contoh: HoodBot) dan username (harus diakhiri 'bot', contoh: my_hoodbot). BotFather akan memberikan API Token berupa string seperti: 7412345678:AAHxxxxxxxxxxxxxxxx",
+    body: "Buka Telegram, cari @BotFather, kirim /newbot. Masukkan nama display (contoh: Hood Bot) lalu username yang diakhiri 'bot' (contoh: my_hoodbot). BotFather akan membalas dengan HTTP API Token.",
   },
   {
     step: "02",
-    title: "Tambahkan TELEGRAM_BOT_TOKEN",
-    body: 'Salin token dari BotFather. Di v0, klik Settings (atas kanan) → Vars → tambah variabel baru: Key = TELEGRAM_BOT_TOKEN, Value = token kamu. Tanpa env var ini bot tidak bisa jalan.',
+    title: "Tambah env TELEGRAM_BOT_TOKEN",
+    body: "Di v0, klik ikon Settings (atas kanan) → Vars → Add. Key: TELEGRAM_BOT_TOKEN, Value: token dari BotFather (format: 12345:AAxxxxxx). Lalu klik Save dan redeploy.",
   },
   {
     step: "03",
-    title: "Tambahkan TELEGRAM_BOT_USERNAME (opsional)",
-    body: "Tambahkan env var TELEGRAM_BOT_USERNAME berisi username bot tanpa @ (contoh: my_hoodbot). Ini memunculkan link t.me/... di dashboard supaya mudah diakses.",
+    title: "Tambah env TELEGRAM_BOT_USERNAME",
+    body: "Tambah env var lagi: Key: TELEGRAM_BOT_USERNAME, Value: username bot tanpa @ (contoh: my_hoodbot). Ini dipakai untuk menampilkan link t.me di dashboard.",
   },
   {
     step: "04",
-    title: "DATABASE_URL sudah otomatis",
-    body: "Kalau Neon sudah terkoneksi (terlihat dari stats di atas yang muncul), DATABASE_URL sudah tersedia otomatis. Tidak perlu setting manual.",
+    title: "DATABASE_URL sudah otomatis (Neon)",
+    body: "Neon sudah terkoneksi. DATABASE_URL tersedia otomatis. Tidak perlu setting manual.",
   },
   {
     step: "05",
-    title: "Opsional: RPC_URL custom",
-    body: "Default RPC: https://rpc.mainnet.chain.robinhood.com. Untuk reliability lebih baik di produksi, tambah env var RPC_URL dengan endpoint RPC privat Robinhood Chain milikmu.",
+    title: "Deploy ke Vercel lalu daftarkan Webhook",
+    body: "Setelah deploy, klik tombol 'Daftarkan Webhook' di panel Koneksi Telegram di atas. Tombol itu otomatis mengirim setWebhook ke Telegram API dengan URL deployment kamu. Bot langsung aktif menerima pesan.",
   },
   {
     step: "06",
-    title: "Install ts-node lalu jalankan bot",
-    body: "Di terminal server kamu, jalankan: npm install -g ts-node typescript. Lalu masuk ke folder project dan jalankan: pnpm run bot:dev. Bot akan polling Telegram dan cron auto-rebalance akan aktif setiap 5 menit.",
+    title: "Kirim /start ke bot di Telegram",
+    body: "Buka Telegram, cari username bot, kirim /start. Bot akan membalas dengan menu utama. Ikuti wizard untuk membuat atau import wallet. Semua private key dienkripsi AES-256-GCM dengan PIN 6 digit.",
   },
   {
     step: "07",
-    title: "Buka bot di Telegram, kirim /start",
-    body: "Cari username bot kamu di Telegram, kirim /start. Ikuti wizard untuk membuat atau import wallet. Semua private key dienkripsi AES-256-GCM dengan PIN 6 digit kamu — tidak ada yang disimpan plaintext.",
+    title: "Lokal dev (opsional): pnpm run bot:dev",
+    body: "Untuk development lokal, clone project, isi .env dengan TELEGRAM_BOT_TOKEN dan DATABASE_URL, lalu jalankan: pnpm run bot:dev. Mode ini memakai long polling — jangan jalankan bersamaan dengan webhook Vercel aktif.",
   },
 ] as const;
 

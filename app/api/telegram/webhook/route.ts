@@ -1,17 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
+import { webhookCallback } from "grammy";
 
-// Force dynamic so Next.js never tries to statically evaluate this route.
-// The bot module pulls in grammy + viem + pg which all need runtime env vars.
+// Force dynamic — this route depends on runtime env vars (TELEGRAM_BOT_TOKEN)
 export const dynamic = "force-dynamic";
+
+// Module-level singleton so the Bot instance (and all its middleware/conversations)
+// is reused across requests in the same Node.js worker process.
+let cachedHandler: ((req: Request) => Promise<Response>) | null = null;
+
+async function getHandler() {
+  if (!cachedHandler) {
+    const { bot } = await import("@/src/bot");
+    cachedHandler = webhookCallback(bot, "std/http");
+  }
+  return cachedHandler;
+}
 
 /**
  * POST /api/telegram/webhook
- * Telegram calls this endpoint with each update when webhook mode is active.
+ * Telegram sends every update here when webhook mode is active.
+ * Register the webhook once via the dashboard "Daftarkan Webhook" button,
+ * or manually:
+ *   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<domain>/api/telegram/webhook"
  */
 export async function POST(req: NextRequest) {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
 
-  // Validate secret header to prevent spoofed updates
+  // Optional: validate Telegram's secret token header
   if (secret) {
     const header = req.headers.get("x-telegram-bot-api-secret-token");
     if (header !== secret) {
@@ -19,26 +34,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    return NextResponse.json({ error: "TELEGRAM_BOT_TOKEN not configured" }, { status: 500 });
+  }
+
   try {
-    // Dynamically import the bot at request time to avoid static evaluation
-    const { bot } = await import("@/src/bot");
-    const { webhookCallback } = await import("grammy");
-    const handler = webhookCallback(bot, "std/http");
+    const handler = await getHandler();
     return await handler(req);
   } catch (err) {
     console.error("[HoodBot] Webhook error:", err);
-    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-// Health check
+// GET — health check, used by the dashboard WebhookPanel
 export function GET() {
-  const hasToken = Boolean(process.env.TELEGRAM_BOT_TOKEN);
   return NextResponse.json({
     status: "ok",
     bot: "HoodBot",
     chain: "Robinhood Mainnet (4663)",
-    tokenConfigured: hasToken,
+    tokenConfigured: Boolean(process.env.TELEGRAM_BOT_TOKEN),
     mode: "webhook",
   });
 }
