@@ -7,6 +7,7 @@ import { eq, and, isNull, desc } from "drizzle-orm";
 import { createWalletConversation } from "./conversations/createWallet";
 import { importWalletConversation } from "./conversations/importWallet";
 import { addLiquidityV3Conversation } from "./conversations/addLiquidityV3";
+import { addLiquidityV4Conversation } from "./conversations/addLiquidityV4";
 import { mintNFTConversation } from "./conversations/mintNFT";
 import { shortAddress } from "../utils/format";
 import { getTopPools, formatUsd } from "../services/data/geckoTerminal";
@@ -32,6 +33,7 @@ bot.use(conversations<MyContext>());
 bot.use(createConversation(createWalletConversation, "createWallet"));
 bot.use(createConversation(importWalletConversation, "importWallet"));
 bot.use(createConversation(addLiquidityV3Conversation, "addLiquidityV3"));
+bot.use(createConversation(addLiquidityV4Conversation, "addLiquidityV4"));
 bot.use(createConversation(mintNFTConversation, "mintNFT"));
 
 // ── /start ─────────────────────────────────────────────────────────────────────
@@ -203,13 +205,7 @@ bot.callbackQuery("cmd_add_lp_v3", async (ctx) => {
 
 bot.callbackQuery("cmd_add_lp_v4", async (ctx) => {
   await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "Uniswap V4 LP is available on Robinhood Chain.\n\n" +
-      "V4 uses PoolManager: <code>0x8366a39CC670B4001A1121B8F6A443A643e40951</code>\n\n" +
-      "To add V4 liquidity, specify a PoolKey (tokens + fee + tickSpacing + hooks).\n\n" +
-      "Use /lp_v4 command (in development).",
-    { parse_mode: "HTML" }
-  );
+  await ctx.conversation.enter("addLiquidityV4");
 });
 
 bot.callbackQuery("cmd_mint_nft", async (ctx) => {
