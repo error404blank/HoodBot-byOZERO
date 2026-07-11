@@ -3,6 +3,7 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { PositionsTable } from "@/components/dashboard/PositionsTable";
 import { NftMintsTable } from "@/components/dashboard/NftMintsTable";
 import { BotStatusBanner } from "@/components/dashboard/BotStatusBanner";
+import { WebhookPanel } from "@/components/dashboard/WebhookPanel";
 import { CommandReference } from "@/components/dashboard/CommandReference";
 import { SetupGuide } from "@/components/dashboard/SetupGuide";
 import { db } from "@/src/db";
@@ -58,6 +59,16 @@ export default async function Page() {
   const positions = data?.positions ?? [];
   const mints = data?.mints ?? [];
 
+  const tokenConnected = Boolean(process.env.TELEGRAM_BOT_TOKEN);
+  const botUsername = process.env.TELEGRAM_BOT_USERNAME;
+  const dbConnected = Boolean(process.env.DATABASE_URL);
+
+  // Mark setup steps as done based on env state
+  const completedSteps: string[] = [];
+  if (tokenConnected) completedSteps.push("01", "02");
+  if (botUsername) completedSteps.push("03");
+  if (dbConnected) completedSteps.push("04");
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Header */}
@@ -91,7 +102,10 @@ export default async function Page() {
 
       <main className="mx-auto max-w-7xl px-4 py-6 flex flex-col gap-6">
         {/* Status banner */}
-        <BotStatusBanner botUsername={process.env.TELEGRAM_BOT_USERNAME} />
+        <BotStatusBanner botUsername={botUsername} tokenConnected={tokenConnected} />
+
+        {/* Telegram connection panel */}
+        <WebhookPanel botUsername={botUsername} tokenConnected={tokenConnected} />
 
         {/* Stats grid */}
         <section aria-label="Bot statistics">
@@ -164,7 +178,7 @@ export default async function Page() {
         </section>
 
         <section aria-label="Setup guide">
-          <SetupGuide />
+          <SetupGuide completedSteps={completedSteps} />
         </section>
 
         {/* Contract addresses */}

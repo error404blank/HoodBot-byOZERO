@@ -36,24 +36,51 @@ const STEPS = [
   },
 ] as const;
 
-export function SetupGuide() {
+interface SetupGuideProps {
+  completedSteps?: string[];
+}
+
+export function SetupGuide({ completedSteps = [] }: SetupGuideProps) {
   return (
     <div className="rounded-lg border border-border bg-card">
-      <div className="px-4 py-3 border-b border-border">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Setup &amp; Integrasi Telegram</h3>
+        {completedSteps.length > 0 && (
+          <span className="text-xs font-mono text-primary bg-primary/10 border border-primary/20 rounded px-2 py-0.5">
+            {completedSteps.length}/{STEPS.length} selesai
+          </span>
+        )}
       </div>
       <div className="divide-y divide-border/50">
-        {STEPS.map(({ step, title, body }) => (
-          <div key={step} className="flex gap-4 px-4 py-4">
-            <div className="shrink-0 w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center">
-              <span className="text-xs font-mono font-bold text-primary">{step}</span>
+        {STEPS.map(({ step, title, body }) => {
+          const done = completedSteps.includes(step);
+          return (
+            <div key={step} className={`flex gap-4 px-4 py-4 transition-colors ${done ? "bg-primary/3" : ""}`}>
+              <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center border ${
+                done
+                  ? "bg-primary/20 border-primary/40"
+                  : "bg-primary/10 border-primary/20"
+              }`}>
+                {done ? (
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-label="Done">
+                    <path d="M2.5 7L5.5 10L11.5 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-primary" style={{ color: "var(--primary)" }} />
+                  </svg>
+                ) : (
+                  <span className="text-xs font-mono font-bold text-primary">{step}</span>
+                )}
+              </div>
+              <div className="flex flex-col gap-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm font-mono font-semibold ${done ? "text-primary" : "text-foreground"}`}>{title}</span>
+                  {done && (
+                    <span className="text-xs font-mono text-primary border border-primary/30 bg-primary/10 rounded px-1.5 py-0.5 leading-none">Done</span>
+                  )}
+                </div>
+                <span className={`text-xs font-mono leading-relaxed ${done ? "text-muted-foreground/60 line-through decoration-primary/30" : "text-muted-foreground"}`}>{body}</span>
+              </div>
             </div>
-            <div className="flex flex-col gap-1 min-w-0">
-              <span className="text-sm font-mono font-semibold text-foreground">{title}</span>
-              <span className="text-xs font-mono text-muted-foreground leading-relaxed">{body}</span>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
