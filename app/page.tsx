@@ -2,8 +2,11 @@ import Image from "next/image";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { PositionsTable } from "@/components/dashboard/PositionsTable";
 import { NftMintsTable } from "@/components/dashboard/NftMintsTable";
+import Link from "next/link";
 import { BotStatusBanner } from "@/components/dashboard/BotStatusBanner";
 import { WebhookPanel } from "@/components/dashboard/WebhookPanel";
+import { VpsPanel } from "@/components/dashboard/VpsPanel";
+import { EnvGenerator } from "@/components/dashboard/EnvGenerator";
 import { CommandReference } from "@/components/dashboard/CommandReference";
 import { SetupGuide } from "@/components/dashboard/SetupGuide";
 import { db } from "@/src/db";
@@ -62,6 +65,10 @@ export default async function Page() {
   const tokenConnected = Boolean(process.env.TELEGRAM_BOT_TOKEN);
   const botUsername = process.env.TELEGRAM_BOT_USERNAME;
   const dbConnected = Boolean(process.env.DATABASE_URL);
+  const deploymentUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.V0_RUNTIME_URL ?? undefined;
+  const hasApiKey = Boolean(process.env.HOODBOT_API_KEY);
 
   // Mark setup steps as done based on env state
   const completedSteps: string[] = [];
@@ -82,6 +89,12 @@ export default async function Page() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              href="/agent"
+              className="hidden sm:flex items-center gap-1.5 text-xs font-mono text-primary hover:text-primary/80 transition-colors border border-primary/30 bg-primary/5 rounded-md px-2.5 py-1.5"
+            >
+              AI Agent API
+            </Link>
             <a
               href="https://robinhoodchain.blockscout.com"
               target="_blank"
@@ -179,6 +192,39 @@ export default async function Page() {
 
         <section aria-label="Setup guide">
           <SetupGuide completedSteps={completedSteps} />
+        </section>
+
+        {/* VPS setup */}
+        <section aria-label="VPS setup">
+          <VpsPanel />
+        </section>
+
+        {/* .env generator */}
+        <section aria-label="Environment variables">
+          <EnvGenerator
+            deploymentUrl={deploymentUrl}
+            hasBotToken={tokenConnected}
+            hasBotUsername={Boolean(botUsername)}
+            hasDatabase={dbConnected}
+          />
+        </section>
+
+        {/* AI Agent CTA */}
+        <section aria-label="AI Agent integration">
+          <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-mono font-semibold text-foreground">Integrasi AI Agent (Hermes / LangChain)</span>
+              <span className="text-xs font-mono text-muted-foreground">
+                Gunakan REST API HoodBot untuk memberi kemampuan DeFi ke AI Agent kamu — baca market data, trigger LP, dan mint NFT secara otomatis.
+              </span>
+            </div>
+            <Link
+              href="/agent"
+              className="shrink-0 text-xs font-mono px-4 py-2 rounded border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-center"
+            >
+              Lihat Dokumentasi API
+            </Link>
+          </div>
         </section>
 
         {/* Contract addresses */}
