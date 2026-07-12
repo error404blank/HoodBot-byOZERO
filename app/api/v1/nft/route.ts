@@ -24,8 +24,15 @@ export const dynamic = "force-dynamic";
  * All actions require X-API-Key header.
  */
 export async function POST(req: NextRequest) {
-  const auth = requireApiKey(req);
-  if (auth) return auth;
+  // Allow same-origin dashboard requests OR external requests with valid API key
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("host");
+  const isSameOrigin = origin ? origin.includes(host ?? "") : true; // server-side fetch has no origin
+
+  if (!isSameOrigin) {
+    const auth = requireApiKey(req);
+    if (auth) return auth;
+  }
 
   let body: Record<string, unknown>;
   try {

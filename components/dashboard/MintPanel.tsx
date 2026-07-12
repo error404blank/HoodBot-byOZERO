@@ -47,7 +47,7 @@ function shortAddr(addr: string) {
   return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
 }
 
-export function MintPanel({ apiKey }: { apiKey: string }) {
+export function MintPanel() {
   const [contractAddress, setContractAddress] = useState("");
   const [contractInfo, setContractInfo] = useState<ContractInfo | null>(null);
   const [simResult, setSimResult] = useState<SimResult | null>(null);
@@ -65,10 +65,7 @@ export function MintPanel({ apiKey }: { apiKey: string }) {
   async function callApi(action: string, extra: Record<string, unknown> = {}) {
     const res = await fetch("/api/v1/nft", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": apiKey,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, contractAddress, ...extra }),
     });
     return res.json();

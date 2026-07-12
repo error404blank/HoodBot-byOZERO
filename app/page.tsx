@@ -73,8 +73,6 @@ export default async function Page() {
   const deploymentUrl = process.env.VERCEL_URL
     ? `https://${process.env.VERCEL_URL}`
     : process.env.V0_RUNTIME_URL ?? undefined;
-  const hasApiKey = Boolean(process.env.HOODBOT_API_KEY);
-
   // Mark setup steps as done based on env state
   const completedSteps: string[] = [];
   if (tokenConnected) completedSteps.push("01", "02");
@@ -191,21 +189,8 @@ export default async function Page() {
             <h2 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
               NFT Minter — Web Interface
             </h2>
-            {!hasApiKey && (
-              <span className="text-xs font-mono text-yellow-500 border border-yellow-500/30 bg-yellow-500/5 rounded px-2 py-0.5">
-                Set HOODBOT_API_KEY to enable
-              </span>
-            )}
           </div>
-          {hasApiKey ? (
-            <MintPanel apiKey={process.env.HOODBOT_API_KEY!} />
-          ) : (
-            <div className="rounded-lg border border-border bg-card p-6 text-center">
-              <p className="text-sm font-mono text-muted-foreground">
-                Add <code className="text-primary">HOODBOT_API_KEY</code> to your environment variables to enable the web minter.
-              </p>
-            </div>
-          )}
+          <MintPanel />
         </section>
 
         {/* Two-col: Commands + Setup */}
