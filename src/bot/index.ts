@@ -2,8 +2,9 @@ import { Bot, session, InlineKeyboard } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import type { MyContext, SessionData } from "./types";
 import { db } from "../db";
-import { users, wallets, lpPositions, nftMints } from "../db/schema";
-import { eq, and, isNull, desc } from "drizzle-orm";
+import { users, wallets, lpPositions, nftMints, loginCodes, webSessions } from "../db/schema";
+import { eq, and, isNull, desc, gt } from "drizzle-orm";
+import { randomBytes } from "crypto";
 import { createWalletConversation } from "./conversations/createWallet";
 import { importWalletConversation } from "./conversations/importWallet";
 import { addLiquidityV3Conversation } from "./conversations/addLiquidityV3";
@@ -478,6 +479,72 @@ bot.callbackQuery("cmd_auto_mint", async (ctx) => {
 bot.callbackQuery("cmd_start", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply("Use /start to see the main menu.");
+});
+
+// ── /login command — web dashboard authentication ─────────────────────────────
+// Usage: /login 123456  (user sends the 6-digit code shown on the web)
+bot.command("login", async (ctx) => {
+  const code = ctx.match?.trim();
+  if (!code || !/^\d{6}$/.test(code)) {
+    await ctx.reply(
+      "Usage: /login <6-digit code>\n\n" +
+      "Open the HoodBot dashboard, click \"Login with Telegram\", " +
+      "then send the 6-digit code shown on screen."
+    );
+    return;
+  }
+
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  const now = new Date();
+
+  const loginCode = await db.query.loginCodes.findFirst({
+    where: and(
+      eq(loginCodes.code, code),
+      gt(loginCodes.expiresAt, now)
+    ),
+  });
+
+  if (!loginCode) {
+    await ctx.reply("Code expired or invalid. Please go back to the dashboard and request a new code.");
+    return;
+  }
+
+  if (loginCode.usedAt) {
+    await ctx.reply("This code has already been used.");
+    return;
+  }
+
+  // Find or create user
+  let user = await db.query.users.findFirst({
+    where: eq(users.telegramId, BigInt(telegramId)),
+  });
+
+  if (!user) {
+    const [newUser] = await db.insert(users).values({
+      telegramId: BigInt(telegramId),
+      username: ctx.from.username ?? null,
+      firstName: ctx.from.first_name ?? null,
+    }).returning();
+    user = newUser;
+  }
+
+  // Mark code as used
+  await db.update(loginCodes)
+    .set({ userId: user.id, usedAt: now })
+    .where(eq(loginCodes.code, code));
+
+  // Create web session (7 days)
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await db.insert(webSessions).values({ token, userId: user.id, expiresAt });
+
+  await ctx.reply(
+    `Login confirmed! Go back to the dashboard — it will log you in automatically.\n\n` +
+    `Logged in as: ${ctx.from.first_name ?? ctx.from.username ?? "User"}\n` +
+    `Session valid for 7 days.`
+  );
 });
 
 // ── Token check message handler ────────────────────────────────────────────────

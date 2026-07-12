@@ -1,5 +1,11 @@
 import { parseAbi, parseEther, formatEther, encodeFunctionData } from "viem";
-import { getPublicClient, getWalletClient } from "./chain";
+import {
+  getPublicClient,
+  getWalletClient,
+  getPublicClientForChain,
+  getWalletClientForChain,
+  type MintChainSlug,
+} from "./chain";
 
 // ─── Interface IDs ────────────────────────────────────────────────────────────
 const ERC721_INTERFACE_ID = "0x80ac58cd";
@@ -106,9 +112,12 @@ export function classifyMintError(msg: string): "fatal" | "retryable" {
 
 // ─── Contract detection ───────────────────────────────────────────────────────
 export async function detectNftContract(
-  contractAddress: string
+  contractAddress: string,
+  chainSlug: MintChainSlug = "robinhood"
 ): Promise<NftContractInfo> {
-  const publicClient = getPublicClient();
+  const publicClient = chainSlug === "robinhood"
+    ? getPublicClient()
+    : getPublicClientForChain(chainSlug);
   const addr = contractAddress as `0x${string}`;
 
   const code = await publicClient.getCode({ address: addr });
@@ -271,9 +280,12 @@ export async function simulateMint(
   contractAddress: string,
   quantity: number,
   mintPriceWei: bigint,
-  walletAddress: string
+  walletAddress: string,
+  chainSlug: MintChainSlug = "robinhood"
 ): Promise<SimulateResult> {
-  const publicClient = getPublicClient();
+  const publicClient = chainSlug === "robinhood"
+    ? getPublicClient()
+    : getPublicClientForChain(chainSlug);
   const addr = contractAddress as `0x${string}`;
   const from = walletAddress as `0x${string}`;
   const totalValue = mintPriceWei * BigInt(quantity);
@@ -345,6 +357,7 @@ export interface MintNftParams {
   mintPriceWei: bigint;
   privateKey: `0x${string}`;
   recipientAddress: string;
+  chainSlug?: MintChainSlug;
 }
 
 export interface MintNftResult {
@@ -353,8 +366,13 @@ export interface MintNftResult {
 }
 
 export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
-  const publicClient = getPublicClient();
-  const { client: walletClient, account } = getWalletClient(params.privateKey);
+  const slug = params.chainSlug ?? "robinhood";
+  const publicClient = slug === "robinhood"
+    ? getPublicClient()
+    : getPublicClientForChain(slug);
+  const { client: walletClient, account } = slug === "robinhood"
+    ? getWalletClient(params.privateKey)
+    : getWalletClientForChain(params.privateKey, slug);
   const addr = params.contractAddress as `0x${string}`;
   const totalValue = params.mintPriceWei * BigInt(params.quantity);
 

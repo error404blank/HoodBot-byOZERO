@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiKey } from "@/lib/apiAuth";
+import { getSessionUser } from "@/lib/session";
 import { db } from "@/src/db";
 import { lpPositions, wallets, users } from "@/src/db/schema";
-import { eq, isNull } from "drizzle-orm";
+import { eq, isNull, desc } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,17 @@ export const dynamic = "force-dynamic";
  *     "https://<domain>/api/v1/positions?telegramId=123456789"
  */
 export async function GET(req: NextRequest) {
+  // Web dashboard — session auth (no telegramId param needed)
+  const sessionUser = await getSessionUser(req);
+  if (sessionUser && !req.nextUrl.searchParams.has("telegramId")) {
+    const positions = await db.query.lpPositions.findMany({
+      where: eq(lpPositions.userId, sessionUser.id),
+      orderBy: [desc(lpPositions.createdAt)],
+    });
+    return NextResponse.json({ positions });
+  }
+
+  // Bot / agent — API key auth
   const auth = requireApiKey(req);
   if (auth) return auth;
 

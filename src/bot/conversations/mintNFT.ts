@@ -14,6 +14,7 @@ import {
 } from "../../services/nft";
 import { decryptPrivateKey, isValidAddress, isValidPin } from "../../services/wallet";
 import { waitOrCancel, CancelledError } from "./cancelHelper";
+import { SUPPORTED_MINT_CHAINS, type MintChainSlug } from "../../services/chain";
 
 export async function mintNFTConversation(
   conversation: Conversation<MyContext, MyContext>,
@@ -40,9 +41,20 @@ export async function mintNFTConversation(
   }
 
   try {
+    // ── 0. Network selection ────────────────────────────────────────────────
+    const networkKb = new InlineKeyboard();
+    SUPPORTED_MINT_CHAINS.forEach((c) => {
+      networkKb.text(c.name, `chain_${c.slug}`).row();
+    });
+    await ctx.reply("NFT Minting — Pilih Network:", { reply_markup: networkKb });
+    const networkAnswer = await conversation.waitFor("callback_query:data");
+    await networkAnswer.answerCallbackQuery();
+    const chainSlug = networkAnswer.callbackQuery.data.replace("chain_", "") as MintChainSlug;
+    const selectedChain = SUPPORTED_MINT_CHAINS.find((c) => c.slug === chainSlug) ?? SUPPORTED_MINT_CHAINS[1];
+
     // ── 1. Contract address ─────────────────────────────────────────────────
     await ctx.reply(
-      "NFT Minting\n\n" +
+      `NFT Minting — ${selectedChain.name}\n\n` +
         "Paste the NFT contract address to mint from.\n\n" +
         "Send /cancel at any time to abort."
     );
@@ -61,10 +73,10 @@ export async function mintNFTConversation(
 
     // ── 2. Detect contract ──────────────────────────────────────────────────
     await ctx.reply("Detecting contract...");
-    const contractInfo = await detectNftContract(contractAddress);
+    const contractInfo = await detectNftContract(contractAddress, chainSlug);
 
     if (!contractInfo.hasCode) {
-      await ctx.reply("No contract found at this address on Robinhood Chain.");
+      await ctx.reply(`No contract found at this address on ${selectedChain.name}.`);
       return;
     }
 
@@ -202,7 +214,7 @@ export async function mintNFTConversation(
     await modeAnswer.answerCallbackQuery();
     const mode = modeAnswer.callbackQuery.data;
 
-    // ── 6a. Auto-watch ───────────────────────────────────────────────────────
+    // ── 6a. Auto-watch ──────────────��────────────────────────────────────────
     if (mode === "auto_mint") {
       await db.insert(autoMintWatchers).values({
         userId: user.id,
@@ -231,7 +243,7 @@ export async function mintNFTConversation(
     // ── 6c. Dry-run (simulate) ───────────────────────────────────────────────
     if (mode === "dry_run") {
       await ctx.reply("Simulating transaction...");
-      const sim = await simulateMint(contractAddress, quantity, mintPriceWei, activeWallet.address);
+      const sim = await simulateMint(contractAddress, quantity, mintPriceWei, activeWallet.address, chainSlug);
       if (sim.success) {
         await ctx.reply(
           `Simulation passed.\n\n` +
@@ -307,6 +319,7 @@ export async function mintNFTConversation(
         mintPriceWei,
         privateKey: privateKey as `0x${string}`,
         recipientAddress: activeWallet.address,
+        chainSlug,
       });
 
       await db.insert(nftMints).values({
@@ -323,7 +336,7 @@ export async function mintNFTConversation(
           `Quantity: ${quantity}\n` +
           `Gas used: ${result.gasUsed ? Number(result.gasUsed).toLocaleString() : "N/A"}\n` +
           `TX: <code>${result.txHash}</code>\n` +
-          `Explorer: https://robinhoodchain.blockscout.com/tx/${result.txHash}`,
+          `Explorer: ${selectedChain.explorer}/tx/${result.txHash}`,
         { parse_mode: "HTML" }
       );
     } catch (err) {

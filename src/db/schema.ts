@@ -84,6 +84,38 @@ export const autoMintWatchers = pgTable("auto_mint_watchers", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// ─── login_codes ──────────────────────────────────────────────────────────────
+// Short-lived one-time codes generated on the web, confirmed via Telegram bot
+export const loginCodes = pgTable("login_codes", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  userId: integer("user_id"),                          // null until bot confirms
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ─── web_sessions ─────────────────────────────────────────────────────────────
+export const webSessions = pgTable("web_sessions", {
+  id: serial("id").primaryKey(),
+  token: text("token").notNull().unique(),
+  userId: integer("user_id").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ─── custom_rpcs ──────────────────────────────────────────────────────────────
+export const customRpcs = pgTable("custom_rpcs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  chainId: integer("chain_id").notNull(),          // 1=Ethereum, 4663=Robinhood, 8453=Base
+  chainName: text("chain_name").notNull(),
+  name: text("name").notNull(),
+  url: text("url").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -93,3 +125,7 @@ export type LpPosition = typeof lpPositions.$inferSelect;
 export type NewLpPosition = typeof lpPositions.$inferInsert;
 export type NftMint = typeof nftMints.$inferSelect;
 export type AutoMintWatcher = typeof autoMintWatchers.$inferSelect;
+export type LoginCode = typeof loginCodes.$inferSelect;
+export type WebSession = typeof webSessions.$inferSelect;
+export type CustomRpc = typeof customRpcs.$inferSelect;
+export type NewCustomRpc = typeof customRpcs.$inferInsert;
