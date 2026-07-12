@@ -85,8 +85,9 @@ export function VpsPanel() {
       {/* Intro */}
       <div className="px-4 pt-4 pb-2">
         <p className="text-xs font-mono text-muted-foreground leading-relaxed">
-          Ikuti langkah di bawah secara berurutan. Setiap langkah dijalankan di terminal VPS kamu (SSH). 
+          Ikuti langkah di bawah secara berurutan. Setiap langkah dijalankan di terminal VPS kamu lewat SSH.
           Klik <span className="text-foreground">Copy</span> untuk menyalin perintah, lalu paste di terminal.
+          Jangan tutup terminal atau tekan Ctrl+C saat perintah masih berjalan.
         </p>
       </div>
 
@@ -95,9 +96,8 @@ export function VpsPanel() {
         <StepBlock
           number="1"
           title="Cek kondisi VPS"
-          description="Jalankan semua perintah ini satu per satu untuk tahu apa yang sudah terinstall."
+          description="Jalankan satu per satu untuk tahu apa yang sudah terinstall. Catat hasilnya."
           commands={[
-            "cat /etc/os-release | head -3",
             "node --version",
             "git --version",
             "pm2 --version",
@@ -106,8 +106,8 @@ export function VpsPanel() {
 
         <StepBlock
           number="2"
-          title="Install Node.js 20 (jika belum ada)"
-          description="Lewati langkah ini jika node --version di atas sudah menampilkan versi 18 atau lebih."
+          title="Install Node.js 20 (jika node --version belum ada atau di bawah v18)"
+          description="Lewati step ini jika node --version sudah menampilkan v18 atau lebih."
           commands={[
             "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -",
             "sudo apt-get install -y nodejs",
@@ -117,7 +117,7 @@ export function VpsPanel() {
         <StepBlock
           number="3"
           title="Install pnpm, PM2, dan tsx"
-          description="pnpm adalah package manager, PM2 untuk menjaga bot tetap berjalan, tsx untuk menjalankan TypeScript."
+          description="Tunggu sampai selesai penuh — jangan tekan Ctrl+C. Ketiga tools ini wajib ada sebelum lanjut."
           commands={[
             "npm install -g pnpm pm2 tsx",
           ]}
@@ -126,8 +126,9 @@ export function VpsPanel() {
         <StepBlock
           number="4"
           title="Clone repository HoodBot dari GitHub"
-          description="Perintah ini mengunduh seluruh source code HoodBot ke folder 'hoodbot' di VPS kamu."
+          description="Mengunduh seluruh source code ke folder 'hoodbot'. Jalankan dari home directory kamu (~)."
           commands={[
+            "cd ~",
             "git clone https://github.com/error404blank/HoodBot-byOZERO.git hoodbot",
             "cd hoodbot",
           ]}
@@ -135,28 +136,30 @@ export function VpsPanel() {
 
         <StepBlock
           number="5"
-          title="Install semua dependencies project"
-          description="Perintah ini menginstall semua package yang dibutuhkan bot (grammy, viem, drizzle, dll)."
+          title="Install semua dependencies"
+          description="Tunggu sampai selesai. Di akhir akan muncul pesan ERR_PNPM_IGNORED_BUILDS — itu normal, bukan error fatal. Lanjutkan ke perintah berikutnya."
           commands={[
             "pnpm install",
+            "pnpm approve-builds",
           ]}
+          note="Saat pnpm approve-builds muncul daftar interaktif, tekan Space untuk pilih semua item lalu tekan Enter untuk konfirmasi."
         />
 
         <StepBlock
           number="6"
           title="Buat file .env dan isi konfigurasi"
-          description="Salin template .env lalu buka untuk diisi. Kamu juga bisa copy isi dari panel '.env File Generator' di bawah halaman ini."
+          description="Buat file .env dari template lalu isi nilainya. Gunakan panel '.env File Generator' di bawah halaman ini untuk menyalin template lengkap."
           commands={[
             "cp .env.example .env",
             "nano .env",
           ]}
-          note="Di dalam nano: tekan Ctrl+O untuk save, lalu Ctrl+X untuk keluar. Pastikan TELEGRAM_BOT_TOKEN dan DATABASE_URL sudah diisi."
+          note="Di dalam nano: isi TELEGRAM_BOT_TOKEN dan DATABASE_URL. Setelah selesai tekan Ctrl+O lalu Enter untuk save, kemudian Ctrl+X untuk keluar."
         />
 
         <StepBlock
           number="7"
-          title="Hapus Webhook Telegram (penting!)"
-          description="Jika sebelumnya kamu pernah mendaftarkan webhook lewat dashboard ini, hapus dulu sebelum menjalankan bot di VPS. Dua mode tidak bisa aktif bersamaan."
+          title="Hapus Webhook Telegram (wajib jika pernah pakai Webhook mode)"
+          description="Jika sebelumnya kamu mendaftarkan webhook lewat dashboard ini, hapus dulu. Long polling dan webhook tidak bisa aktif bersamaan — salah satu akan diabaikan Telegram."
           commands={[
             `curl "https://api.telegram.org/bot$(grep TELEGRAM_BOT_TOKEN .env | cut -d= -f2)/deleteWebhook"`,
           ]}
@@ -165,23 +168,44 @@ export function VpsPanel() {
         <StepBlock
           number="8"
           title="Jalankan bot dengan PM2"
-          description="PM2 menjaga bot tetap berjalan meski terminal ditutup, dan otomatis restart jika crash."
+          description="PM2 menjaga bot tetap berjalan meski terminal ditutup dan otomatis restart jika crash."
           commands={[
             "pm2 start --name hoodbot 'pnpm run bot:dev'",
-            "pm2 logs hoodbot",
           ]}
-          note="Setelah pm2 start, jalankan pm2 logs untuk memastikan bot berjalan dan tidak ada error. Kamu akan melihat log '[HoodBot] Running as @username'."
+          note="Setelah start, tunggu 5 detik lalu cek logs. Kamu akan melihat '[HoodBot] Running as @username' jika berhasil. Jika muncul error, paste logs di sini."
         />
 
         <StepBlock
           number="9"
+          title="Verifikasi bot berjalan"
+          description="Cek status PM2 dan lihat logs terakhir untuk memastikan tidak ada crash."
+          commands={[
+            "pm2 status",
+            "pm2 logs hoodbot --lines 20 --nostream",
+          ]}
+        />
+
+        <StepBlock
+          number="10"
           title="Set PM2 auto-start saat VPS reboot"
-          description="Supaya bot otomatis jalan kembali setelah VPS di-restart."
+          description="Jalankan kedua perintah ini agar bot otomatis aktif kembali setelah VPS di-restart."
           commands={[
             "pm2 startup",
             "pm2 save",
           ]}
         />
+      </div>
+
+      {/* Update guide */}
+      <div className="mx-4 mb-4 rounded border border-primary/20 bg-primary/5 p-3">
+        <p className="text-xs font-mono text-primary mb-2 font-semibold">Cara update bot saat ada perubahan kode</p>
+        <p className="text-xs font-mono text-muted-foreground mb-2 leading-relaxed">
+          Setiap kali ada update dari GitHub, jalankan dua perintah ini dari folder ~/hoodbot:
+        </p>
+        <div className="flex flex-col gap-1.5">
+          <CopyableCommand cmd="cd ~/hoodbot && git pull" />
+          <CopyableCommand cmd="pm2 restart hoodbot" />
+        </div>
       </div>
 
       {/* Quick reference */}
