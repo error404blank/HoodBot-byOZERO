@@ -12,7 +12,7 @@ import {
 import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function createWalletConversation(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ) {
   try {

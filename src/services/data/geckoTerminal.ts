@@ -27,6 +27,8 @@ export interface GeckoToken {
   volumeUsd24h: string;
 }
 
+type GeckoAttributes = Record<string, string | Record<string, string>>;
+
 async function geckoFetch<T>(path: string): Promise<T | null> {
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
@@ -47,7 +49,7 @@ async function geckoFetch<T>(path: string): Promise<T | null> {
 
 /** Fetch top pools on Robinhood Chain (Uniswap V3) sorted by 24h volume */
 export async function getTopPools(limit = 10): Promise<GeckoPool[]> {
-  const data = await geckoFetch<{ data: { id: string; attributes: Record<string, string> }[] }>(
+  const data = await geckoFetch<{ data: { id: string; attributes: GeckoAttributes }[] }>(
     `/networks/${ROBINHOOD_NETWORK}/dexes/${ROBINHOOD_DEX}/pools?sort=h24_volume_usd_desc&page=1`
   );
   if (!data?.data) return [];
@@ -57,22 +59,22 @@ export async function getTopPools(limit = 10): Promise<GeckoPool[]> {
     const relationships = (item as Record<string, unknown>).relationships as Record<string, { data: { id: string } }> | undefined;
     const baseToken = relationships?.base_token?.data?.id?.split("_")[1] ?? "";
     const quoteToken = relationships?.quote_token?.data?.id?.split("_")[1] ?? "";
-    const name: string = a.name ?? "";
+    const name = String(a.name ?? "");
     const parts = name.split(" / ");
     return {
       id: item.id,
-      address: a.address,
+      address: String(a.address ?? ""),
       name,
       baseTokenSymbol: parts[0] ?? "",
       quoteTokenSymbol: parts[1]?.split(" ")[0] ?? "",
       baseTokenAddress: baseToken,
       quoteTokenAddress: quoteToken,
-      priceNative: a.base_token_price_native_currency ?? "0",
-      priceUsd: a.base_token_price_usd ?? "0",
-      volumeUsd24h: a.volume_usd?.h24 ?? "0",
-      tvlUsd: a.reserve_in_usd ?? "0",
+      priceNative: String(a.base_token_price_native_currency ?? "0"),
+      priceUsd: String(a.base_token_price_usd ?? "0"),
+      volumeUsd24h: (a.volume_usd as Record<string, string>)?.h24 ?? "0",
+      tvlUsd: String(a.reserve_in_usd ?? "0"),
       feeTier: 0,
-      priceChangePercent24h: a.price_change_percentage?.h24 ?? "0",
+      priceChangePercent24h: (a.price_change_percentage as Record<string, string>)?.h24 ?? "0",
     } satisfies GeckoPool;
   });
 }
@@ -81,28 +83,28 @@ export async function getTopPools(limit = 10): Promise<GeckoPool[]> {
 export async function getPoolByAddress(
   address: string
 ): Promise<GeckoPool | null> {
-  const data = await geckoFetch<{ data: { id: string; attributes: Record<string, string> } }>(
+  const data = await geckoFetch<{ data: { id: string; attributes: GeckoAttributes } }>(
     `/networks/${ROBINHOOD_NETWORK}/pools/${address}`
   );
   if (!data?.data) return null;
 
   const a = data.data.attributes;
-  const name: string = a.name ?? "";
+  const name = String(a.name ?? "");
   const parts = name.split(" / ");
   return {
     id: data.data.id,
-    address: a.address,
+    address: String(a.address ?? ""),
     name,
     baseTokenSymbol: parts[0] ?? "",
     quoteTokenSymbol: parts[1]?.split(" ")[0] ?? "",
     baseTokenAddress: "",
     quoteTokenAddress: "",
-    priceNative: a.base_token_price_native_currency ?? "0",
-    priceUsd: a.base_token_price_usd ?? "0",
-    volumeUsd24h: a.volume_usd?.h24 ?? "0",
-    tvlUsd: a.reserve_in_usd ?? "0",
+    priceNative: String(a.base_token_price_native_currency ?? "0"),
+    priceUsd: String(a.base_token_price_usd ?? "0"),
+    volumeUsd24h: (a.volume_usd as Record<string, string>)?.h24 ?? "0",
+    tvlUsd: String(a.reserve_in_usd ?? "0"),
     feeTier: 0,
-    priceChangePercent24h: a.price_change_percentage?.h24 ?? "0",
+    priceChangePercent24h: (a.price_change_percentage as Record<string, string>)?.h24 ?? "0",
   };
 }
 
@@ -110,19 +112,19 @@ export async function getPoolByAddress(
 export async function getTokenInfo(
   address: string
 ): Promise<GeckoToken | null> {
-  const data = await geckoFetch<{ data: { attributes: Record<string, string> } }>(
+  const data = await geckoFetch<{ data: { attributes: GeckoAttributes } }>(
     `/networks/${ROBINHOOD_NETWORK}/tokens/${address}`
   );
   if (!data?.data) return null;
 
   const a = data.data.attributes;
   return {
-    address: a.address ?? address,
-    symbol: a.symbol ?? "",
-    name: a.name ?? "",
-    priceUsd: a.price_usd ?? "0",
-    fdvUsd: a.fdv_usd ?? "0",
-    volumeUsd24h: a.volume_usd?.h24 ?? "0",
+    address: String(a.address ?? address),
+    symbol: String(a.symbol ?? ""),
+    name: String(a.name ?? ""),
+    priceUsd: String(a.price_usd ?? "0"),
+    fdvUsd: String(a.fdv_usd ?? "0"),
+    volumeUsd24h: (a.volume_usd as Record<string, string>)?.h24 ?? "0",
   };
 }
 

@@ -29,7 +29,8 @@ bot.use(
     initial: () => ({}),
   })
 );
-bot.use(conversations<MyContext>());
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+bot.use((conversations as any)());
 
 // ── Register conversations ─────────────────────────────────────────────────────
 bot.use(createConversation(createWalletConversation, "createWallet"));
@@ -75,7 +76,7 @@ bot.command("start", async (ctx) => {
 
 // ── /cancel ────────────────────────────────────────────────────────────────────
 bot.command("cancel", async (ctx) => {
-  await ctx.conversation.exit();
+  await ctx.conversation.exitAll();
   await ctx.reply(
     "Action cancelled. Use /start to return to the main menu.",
   );
@@ -424,7 +425,8 @@ bot.callbackQuery("cmd_trending", async (ctx) => {
     const name = String(a.name ?? "Unknown");
     const price = parseFloat(String(a.base_token_price_usd ?? "0"));
     const vol = parseFloat(String((a.volume_usd as Record<string, string>)?.h24 ?? "0"));
-    const txns = Number(a.transactions?.h24?.buys ?? 0) + Number(a.transactions?.h24?.sells ?? 0);
+    const txnsObj = a.transactions as Record<string, Record<string, number>> | undefined;
+    const txns = Number(txnsObj?.h24?.buys ?? 0) + Number(txnsObj?.h24?.sells ?? 0);
     return `${i + 1}. ${name}\n   Price: $${price.toFixed(6)} | Vol: ${formatUsd(vol)} | Txns: ${txns}`;
   });
 

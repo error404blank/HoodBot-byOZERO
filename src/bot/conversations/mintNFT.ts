@@ -16,7 +16,7 @@ import { decryptPrivateKey, isValidAddress, isValidPin } from "../../services/wa
 import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function mintNFTConversation(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ) {
   const telegramId = BigInt(ctx.from!.id);
@@ -350,7 +350,7 @@ async function setupSniperWatcher({
   mintPriceOverride,
 }: {
   ctx: MyContext;
-  conversation: Conversation<MyContext>;
+  conversation: Conversation<MyContext, MyContext>;
   user: { id: number };
   activeWallet: { id: number; name: string };
   contractAddress: string;

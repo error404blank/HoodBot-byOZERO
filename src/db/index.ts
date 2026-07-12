@@ -28,12 +28,12 @@ export function getDb() {
 // the lazily-created Drizzle instance.
 export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
   get(_target, prop) {
-    return (getDb() as Record<string | symbol, unknown>)[prop];
+    return (getDb() as unknown as Record<string | symbol, unknown>)[prop];
   },
 });
 
 export const pool = new Proxy({} as Pool, {
   get(_target, prop) {
-    return (getPool() as Record<string | symbol, unknown>)[prop];
+    return (getPool() as unknown as Record<string | symbol, unknown>)[prop];
   },
 });

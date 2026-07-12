@@ -11,7 +11,7 @@ import type { MyContext } from "../types";
  *   const text = msg.message.text.trim();
  */
 export async function waitOrCancel(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ): Promise<Awaited<ReturnType<typeof conversation.waitFor<"message:text">>>> {
   const msg = await conversation.waitFor("message:text");

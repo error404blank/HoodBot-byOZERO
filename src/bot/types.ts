@@ -10,6 +10,6 @@ export interface SessionData {
   onboardingStep?: string;
 }
 
-export type MyContext = Context &
-  SessionFlavor<SessionData> &
-  ConversationFlavor;
+type BaseContext = Context & SessionFlavor<SessionData>;
+
+export type MyContext = ConversationFlavor<BaseContext>;

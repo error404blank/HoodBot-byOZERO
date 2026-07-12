@@ -13,7 +13,7 @@ import { CONTRACTS } from "../../services/chain";
 import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function addLiquidityV3Conversation(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ) {
   const telegramId = BigInt(ctx.from!.id);

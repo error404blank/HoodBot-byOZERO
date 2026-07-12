@@ -32,7 +32,7 @@ const V4_TICK_SPACINGS: Record<number, number> = {
 };
 
 export async function addLiquidityV4Conversation(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ) {
   const telegramId = BigInt(ctx.from!.id);

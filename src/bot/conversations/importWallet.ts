@@ -14,7 +14,7 @@ import {
 import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function importWalletConversation(
-  conversation: Conversation<MyContext>,
+  conversation: Conversation<MyContext, MyContext>,
   ctx: MyContext
 ) {
   const telegramId = BigInt(ctx.from!.id);
