@@ -360,43 +360,56 @@ bot.callbackQuery("cmd_list_wallets", async (ctx) => {
 bot.callbackQuery("cmd_top_pools", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply("Fetching top pools from GeckoTerminal...");
-  const pools = await getTopPools(10);
+
+  // Try multiple known GeckoTerminal network slugs for Robinhood Chain
+  let pools = await getTopPools(10, "robinhood");
+  if (pools.length === 0) pools = await getTopPools(10, "robinhood-chain");
+  if (pools.length === 0) pools = await getTopPools(10, "eth");// fallback
 
   if (pools.length === 0) {
-    await ctx.reply("Could not fetch pool data. GeckoTerminal may not have indexed Robinhood Chain yet.");
+    await ctx.reply(
+      "GeckoTerminal belum mengindeks Robinhood Chain (Chain ID 4663).\n\n" +
+      "Cek pool secara manual:\n" +
+      "https://www.geckoterminal.com/robinhood-chain/pools\n\n" +
+      "Atau gunakan block explorer:\n" +
+      "https://robinhoodchain.blockscout.com"
+    );
     return;
   }
 
   const lines = pools.map(
     (p, i) =>
-      `${i + 1}. ${p.name}\n   Price: $${parseFloat(p.priceUsd).toFixed(6)}\n   TVL: ${formatUsd(p.tvlUsd)} | 24h Vol: ${formatUsd(p.volumeUsd24h)}`
+      `${i + 1}. ${p.name}\n   Price: $${parseFloat(p.priceUsd).toFixed(6)}\n   TVL: ${formatUsd(p.tvlUsd)} | Vol 24h: ${formatUsd(p.volumeUsd24h)}`
   );
 
   await ctx.reply(`Top Pools on Robinhood Chain:\n\n${lines.join("\n\n")}`);
 });
 
+// Token check — stored per-user flag to avoid global message listener leak
+const pendingTokenCheck = new Set<number>();
+
 bot.callbackQuery("cmd_token_check", async (ctx) => {
   await ctx.answerCallbackQuery();
-  await ctx.reply("Paste a token address to check safety (via GMGN.ai):");
-
-  // Listen for next message
-  bot.on("message:text", async (msgCtx) => {
-    const addr = msgCtx.message.text.trim();
-    if (!isValidAddress(addr)) return;
-    await msgCtx.reply("Checking token safety...");
-    const safety = await getTokenSafety(addr);
-    if (!safety) {
-      await msgCtx.reply("Could not fetch safety data for this token.");
-      return;
-    }
-    await msgCtx.reply(formatSafetyReport(safety));
-  });
+  const userId = ctx.from.id;
+  pendingTokenCheck.add(userId);
+  await ctx.reply(
+    "Paste a token contract address to check safety.\n\n" +
+    "Supported chains: Ethereum, Base, BSC, Arbitrum, Solana.\n" +
+    "(Robinhood Chain tokens not yet supported by GMGN.ai)\n\n" +
+    "Send /cancel to abort."
+  );
 });
 
 bot.callbackQuery("cmd_trending", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply(
-    "Trending signals from Basedbot:\n\nhttps://basedbot.app\n\nVisit the Basedbot platform for live trending tokens on Robinhood Chain."
+    "Trending on Robinhood Chain\n\n" +
+    "GeckoTerminal (pools & price):\n" +
+    "https://www.geckoterminal.com/robinhood-chain/pools\n\n" +
+    "Block Explorer:\n" +
+    "https://robinhoodchain.blockscout.com\n\n" +
+    "Uniswap V3 Interface:\n" +
+    "https://app.uniswap.org/#/pools"
   );
 });
 
@@ -445,6 +458,48 @@ bot.callbackQuery("cmd_auto_mint", async (ctx) => {
 bot.callbackQuery("cmd_start", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply("Use /start to see the main menu.");
+});
+
+// ── Token check message handler ────────────────────────────────────────────────
+// Handles address input after user clicks "Token Check" button.
+// Uses a Set to track per-user pending state — no global listener leak.
+bot.on("message:text", async (ctx, next) => {
+  const userId = ctx.from?.id;
+  if (!userId || !pendingTokenCheck.has(userId)) return next();
+
+  const text = ctx.message.text.trim();
+
+  // Allow /cancel to abort
+  if (text === "/cancel") {
+    pendingTokenCheck.delete(userId);
+    await ctx.reply("Token check cancelled.");
+    return;
+  }
+
+  if (!isValidAddress(text)) {
+    await ctx.reply("Invalid address format. Paste a valid 0x... contract address, or send /cancel to abort.");
+    return;
+  }
+
+  pendingTokenCheck.delete(userId);
+  await ctx.reply("Checking token safety...");
+
+  // Try common chains — GMGN does not support Robinhood Chain yet
+  let safety = await getTokenSafety(text, "eth");
+  if (!safety) safety = await getTokenSafety(text, "base");
+  if (!safety) safety = await getTokenSafety(text, "bsc");
+
+  if (!safety) {
+    await ctx.reply(
+      "Could not fetch safety data for this token.\n\n" +
+      "Note: GMGN.ai currently supports Ethereum, Base, BSC, Arbitrum, and Solana.\n" +
+      "Robinhood Chain tokens are not yet indexed.\n\n" +
+      "Check manually: https://gmgn.ai"
+    );
+    return;
+  }
+
+  await ctx.reply(formatSafetyReport(safety));
 });
 
 // ── Error handler ──────────────────────────────────────────────────────────────

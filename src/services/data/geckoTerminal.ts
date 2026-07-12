@@ -45,9 +45,9 @@ async function geckoFetch<T>(path: string): Promise<T | null> {
 }
 
 /** Fetch top pools on Robinhood Chain by TVL */
-export async function getTopPools(limit = 10): Promise<GeckoPool[]> {
+export async function getTopPools(limit = 10, network = ROBINHOOD_NETWORK): Promise<GeckoPool[]> {
   const data = await geckoFetch<{ data: { id: string; attributes: Record<string, string> }[] }>(
-    `/networks/${ROBINHOOD_NETWORK}/pools?page=1&limit=${limit}&sort=h24_volume_usd_descending`
+    `/networks/${network}/pools?page=1&limit=${limit}&sort=h24_volume_usd_descending`
   );
   if (!data?.data) return [];
 
