@@ -4,36 +4,24 @@ import { db } from "@/src/db";
 import { nftMints, wallets, users } from "@/src/db/schema";
 import { eq } from "drizzle-orm";
 import { decryptPrivateKey } from "@/src/services/wallet";
-import { detectNftContract, mintNft } from "@/src/services/nft";
-
+import {
+  detectNftContract,
+  mintNft,
+  simulateMint,
+  checkAllowlist,
+} from "@/src/services/nft";
 
 export const dynamic = "force-dynamic";
 
 /**
  * POST /api/v1/nft
- * Detect NFT contract info or trigger a mint.
  *
- * Body (detect):
- * {
- *   "action": "detect",
- *   "contractAddress": "0x..."
- * }
+ * action: "detect"   — fetch contract info (phase, supply, price)
+ * action: "simulate" — dry-run: estimate gas without sending
+ * action: "allowlist"— check if a wallet is on the allowlist
+ * action: "mint"     — execute mint (requires telegramId, walletId, pin)
  *
- * Body (mint):
- * {
- *   "action": "mint",
- *   "telegramId": "123456789",
- *   "walletId": 1,
- *   "pin": "123456",
- *   "contractAddress": "0x...",
- *   "quantity": 1
- * }
- *
- * AI Agent usage:
- *   curl -X POST -H "X-API-Key: $HOODBOT_API_KEY" \
- *     -H "Content-Type: application/json" \
- *     -d '{"action":"detect","contractAddress":"0x..."}' \
- *     "https://<domain>/api/v1/nft"
+ * All actions require X-API-Key header.
  */
 export async function POST(req: NextRequest) {
   const auth = requireApiKey(req);
@@ -53,26 +41,64 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "contractAddress required" }, { status: 400 });
   }
 
-  // ── detect ─────────────────────────────────────────────────────────────────
+  // ── detect ──────────────────────────────────────────────────────────────────
   if (action === "detect") {
     try {
       const info = await detectNftContract(contractAddress);
-      return NextResponse.json({ contractAddress, ...info });
+      return NextResponse.json({
+        ...info,
+        mintPriceWei: info.mintPriceWei.toString(),
+      });
     } catch (err) {
       return NextResponse.json({ error: String(err) }, { status: 500 });
     }
   }
 
-  // ── mint ───────────────────────────────────────────────────────────────────
+  // ── simulate (dry-run) ───────────────────────────────────────────────────────
+  if (action === "simulate") {
+    const quantity = Number(body.quantity ?? 1);
+    const walletAddress = body.walletAddress as string;
+    if (!walletAddress) {
+      return NextResponse.json({ error: "walletAddress required for simulate" }, { status: 400 });
+    }
+    try {
+      const info = await detectNftContract(contractAddress);
+      const sim = await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress);
+      return NextResponse.json(sim);
+    } catch (err) {
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  // ── allowlist check ──────────────────────────────────────────────────────────
+  if (action === "allowlist") {
+    const walletAddress = body.walletAddress as string;
+    if (!walletAddress) {
+      return NextResponse.json({ error: "walletAddress required for allowlist" }, { status: 400 });
+    }
+    try {
+      const eligible = await checkAllowlist(contractAddress, walletAddress);
+      return NextResponse.json({
+        contractAddress,
+        walletAddress,
+        eligible,
+        note: eligible === null ? "Contract has no allowlist function" : undefined,
+      });
+    } catch (err) {
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  // ── mint ─────────────────────────────────────────────────────────────────────
   if (action === "mint") {
     const telegramId = body.telegramId as string;
-    const walletId = body.walletId as number;
+    const walletId = Number(body.walletId);
     const pin = body.pin as string;
-    const quantity = (body.quantity as number) ?? 1;
+    const quantity = Number(body.quantity ?? 1);
 
     if (!telegramId || !walletId || !pin) {
       return NextResponse.json(
-        { error: "telegramId, walletId, pin required for mint" },
+        { error: "telegramId, walletId, and pin are required for mint" },
         { status: 400 }
       );
     }
@@ -102,17 +128,15 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      // Detect price first so mintNft knows the value to send
       const info = await detectNftContract(contractAddress);
       const result = await mintNft({
         privateKey,
         contractAddress,
         quantity,
-        mintPrice: info.mintPrice,
+        mintPriceWei: info.mintPriceWei,
         recipientAddress: wallet.address,
       });
 
-      // Record in DB
       await db.insert(nftMints).values({
         userId: user.id,
         walletId: wallet.id,
@@ -125,6 +149,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: true,
         txHash: result.txHash,
+        gasUsed: result.gasUsed,
         contractAddress,
         explorerUrl: `https://robinhoodchain.blockscout.com/tx/${result.txHash}`,
       });

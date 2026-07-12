@@ -1,4 +1,4 @@
-import { parseAbi, parseEther } from "viem";
+import { parseAbi, parseEther, formatEther, encodeFunctionData } from "viem";
 import { getPublicClient, getWalletClient } from "./chain";
 
 // ─── Interface IDs ────────────────────────────────────────────────────────────
@@ -17,7 +17,6 @@ const ERC721_ABI = parseAbi([
   "function maxSupply() view returns (uint256)",
 ]);
 
-// Common mint function signatures used by most NFT projects
 const MINT_ABI = parseAbi([
   "function mint(uint256 quantity) payable",
   "function mint(address to, uint256 quantity) payable",
@@ -27,7 +26,6 @@ const MINT_ABI = parseAbi([
   "function mintTo(address recipient, uint256 count) payable",
 ]);
 
-// Common price functions
 const PRICE_ABI = parseAbi([
   "function price() view returns (uint256)",
   "function mintPrice() view returns (uint256)",
@@ -36,8 +34,27 @@ const PRICE_ABI = parseAbi([
   "function publicSalePrice() view returns (uint256)",
 ]);
 
-// ─── Contract detection ───────────────────────────────────────────────────────
+// Phase detection ABIs — inspired by MINTER's phase enum logic
+const PHASE_ABI = parseAbi([
+  "function paused() view returns (bool)",
+  "function saleIsActive() view returns (bool)",
+  "function publicSaleActive() view returns (bool)",
+  "function mintingEnabled() view returns (bool)",
+  "function mintOpen() view returns (bool)",
+  "function isPublicMintEnabled() view returns (bool)",
+]);
+
+// Allowlist / WL check ABIs
+const ALLOWLIST_ABI = parseAbi([
+  "function isAllowlisted(address account) view returns (bool)",
+  "function isWhitelisted(address account) view returns (bool)",
+  "function allowlist(address account) view returns (bool)",
+]);
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 export type NftStandard = "ERC721" | "ERC1155" | "UNKNOWN";
+
+export type MintPhase = "unknown" | "paused" | "allowlist" | "public" | "soldout";
 
 export interface NftContractInfo {
   address: string;
@@ -47,17 +64,53 @@ export interface NftContractInfo {
   totalSupply: string;
   maxSupply: string;
   mintPrice: string; // in ETH
+  mintPriceWei: bigint;
   isLive: boolean;
   hasCode: boolean;
+  phase: MintPhase;
+  remaining: string; // "unknown" or number string
 }
 
+// ─── Error classification (from MINTER's classify_mint_error) ─────────────────
+export function classifyMintError(msg: string): "fatal" | "retryable" {
+  const lower = msg.toLowerCase();
+
+  // Fatal — insufficient funds, never retry
+  if (
+    lower.includes("insufficient funds") ||
+    lower.includes("insufficient balance") ||
+    lower.includes("exceeds balance") ||
+    lower.includes("out of funds")
+  ) {
+    return "fatal";
+  }
+
+  // Fatal contract errors
+  const fatalPatterns = [
+    "invalidproof",
+    "payernotallowed",
+    "signaturealreadyused",
+    "incorrectpayment",
+    "mintquantityexceedsmaxmintedperwallet",
+    "mintquantityexceedsmaxsupply",
+    "maxsupplyreached",
+    "soldout",
+    "exceeds max supply",
+  ];
+  for (const pat of fatalPatterns) {
+    if (lower.includes(pat)) return "fatal";
+  }
+
+  return "retryable";
+}
+
+// ─── Contract detection ───────────────────────────────────────────────────────
 export async function detectNftContract(
   contractAddress: string
 ): Promise<NftContractInfo> {
   const publicClient = getPublicClient();
   const addr = contractAddress as `0x${string}`;
 
-  // Check if contract exists
   const code = await publicClient.getCode({ address: addr });
   if (!code || code === "0x") {
     return {
@@ -68,8 +121,11 @@ export async function detectNftContract(
       totalSupply: "0",
       maxSupply: "0",
       mintPrice: "0",
+      mintPriceWei: 0n,
       isLive: false,
       hasCode: false,
+      phase: "unknown",
+      remaining: "unknown",
     };
   }
 
@@ -103,12 +159,8 @@ export async function detectNftContract(
   let totalSupply = "0";
   let maxSupply = "0";
 
-  try {
-    name = await publicClient.readContract({ address: addr, abi: ERC721_ABI, functionName: "name" });
-  } catch {}
-  try {
-    symbol = await publicClient.readContract({ address: addr, abi: ERC721_ABI, functionName: "symbol" });
-  } catch {}
+  try { name = await publicClient.readContract({ address: addr, abi: ERC721_ABI, functionName: "name" }); } catch {}
+  try { symbol = await publicClient.readContract({ address: addr, abi: ERC721_ABI, functionName: "symbol" }); } catch {}
   try {
     const ts = await publicClient.readContract({ address: addr, abi: ERC721_ABI, functionName: "totalSupply" });
     totalSupply = ts.toString();
@@ -118,22 +170,48 @@ export async function detectNftContract(
     maxSupply = ms.toString();
   } catch {}
 
-  // Try reading mint price
+  // Mint price
   let mintPriceWei = 0n;
   const priceFns = ["price", "mintPrice", "cost", "PRICE", "publicSalePrice"] as const;
   for (const fn of priceFns) {
     try {
-      const result = await publicClient.readContract({
-        address: addr,
-        abi: PRICE_ABI,
-        functionName: fn,
-      });
-      mintPriceWei = result;
+      mintPriceWei = await publicClient.readContract({ address: addr, abi: PRICE_ABI, functionName: fn });
       break;
     } catch {}
   }
 
-  const mintPrice = (Number(mintPriceWei) / 1e18).toFixed(6);
+  // Phase detection — try multiple common state flags
+  let phase: MintPhase = "unknown";
+  try {
+    const paused = await publicClient.readContract({ address: addr, abi: PHASE_ABI, functionName: "paused" });
+    if (paused) phase = "paused";
+  } catch {}
+
+  if (phase === "unknown") {
+    const activeChecks: Array<"saleIsActive" | "publicSaleActive" | "mintingEnabled" | "mintOpen" | "isPublicMintEnabled"> =
+      ["saleIsActive", "publicSaleActive", "mintingEnabled", "mintOpen", "isPublicMintEnabled"];
+    for (const fn of activeChecks) {
+      try {
+        const active = await publicClient.readContract({ address: addr, abi: PHASE_ABI, functionName: fn });
+        if (active) { phase = "public"; break; }
+        else { phase = "paused"; break; }
+      } catch {}
+    }
+  }
+
+  // Sold out check
+  if (maxSupply !== "0" && totalSupply !== "0") {
+    if (BigInt(totalSupply) >= BigInt(maxSupply)) phase = "soldout";
+  }
+
+  // Remaining supply
+  let remaining = "unknown";
+  if (maxSupply !== "0") {
+    const rem = BigInt(maxSupply) - BigInt(totalSupply);
+    remaining = rem.toString();
+  }
+
+  const mintPrice = formatEther(mintPriceWei);
   const isLive = standard !== "UNKNOWN";
 
   return {
@@ -144,8 +222,100 @@ export async function detectNftContract(
     totalSupply,
     maxSupply,
     mintPrice,
+    mintPriceWei,
     isLive,
     hasCode: true,
+    phase,
+    remaining,
+  };
+}
+
+// ─── WL eligibility check ─────────────────────────────────────────────────────
+export async function checkAllowlist(
+  contractAddress: string,
+  walletAddress: string
+): Promise<boolean | null> {
+  const publicClient = getPublicClient();
+  const addr = contractAddress as `0x${string}`;
+  const wallet = walletAddress as `0x${string}`;
+
+  const fns: Array<"isAllowlisted" | "isWhitelisted" | "allowlist"> = [
+    "isAllowlisted",
+    "isWhitelisted",
+    "allowlist",
+  ];
+
+  for (const fn of fns) {
+    try {
+      const result = await publicClient.readContract({
+        address: addr,
+        abi: ALLOWLIST_ABI,
+        functionName: fn,
+        args: [wallet],
+      });
+      return result;
+    } catch {}
+  }
+  return null; // contract doesn't have allowlist function
+}
+
+// ─── Simulate mint (dry-run) ──────────────────────────────────────────────────
+export interface SimulateResult {
+  success: boolean;
+  gasEstimate: string;
+  errorMessage?: string;
+  errorType?: "fatal" | "retryable";
+}
+
+export async function simulateMint(
+  contractAddress: string,
+  quantity: number,
+  mintPriceWei: bigint,
+  walletAddress: string
+): Promise<SimulateResult> {
+  const publicClient = getPublicClient();
+  const addr = contractAddress as `0x${string}`;
+  const from = walletAddress as `0x${string}`;
+  const totalValue = mintPriceWei * BigInt(quantity);
+
+  // Try each mint function signature and simulate
+  const attempts = [
+    { fn: "mint", args: [BigInt(quantity)] },
+    { fn: "publicMint", args: [BigInt(quantity)] },
+    { fn: "mintPublic", args: [BigInt(quantity)] },
+    { fn: "mint", args: [from, BigInt(quantity)] },
+  ] as const;
+
+  for (const attempt of attempts) {
+    try {
+      const gas = await publicClient.estimateContractGas({
+        address: addr,
+        abi: MINT_ABI,
+        functionName: attempt.fn as "mint" | "publicMint" | "mintPublic",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        args: attempt.args as any,
+        account: from,
+        value: totalValue,
+      });
+      return {
+        success: true,
+        gasEstimate: gas.toString(),
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const errorType = classifyMintError(msg);
+      if (errorType === "fatal") {
+        return { success: false, gasEstimate: "0", errorMessage: msg, errorType: "fatal" };
+      }
+      // retryable — try next signature
+    }
+  }
+
+  return {
+    success: false,
+    gasEstimate: "0",
+    errorMessage: "All mint function signatures failed simulation",
+    errorType: "retryable",
   };
 }
 
@@ -153,88 +323,95 @@ export async function detectNftContract(
 export interface MintNftParams {
   contractAddress: string;
   quantity: number;
-  mintPrice: string; // in ETH per token
+  mintPriceWei: bigint;
   privateKey: `0x${string}`;
   recipientAddress: string;
 }
 
-export async function mintNft(params: MintNftParams): Promise<{ txHash: string }> {
+export interface MintNftResult {
+  txHash: string;
+  gasUsed?: string;
+}
+
+export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
   const publicClient = getPublicClient();
   const { client: walletClient, account } = getWalletClient(params.privateKey);
   const addr = params.contractAddress as `0x${string}`;
-  const totalValue = parseEther(
-    (parseFloat(params.mintPrice) * params.quantity).toFixed(18)
-  );
+  const totalValue = params.mintPriceWei * BigInt(params.quantity);
 
-  // Try common mint function signatures in order
   const mintAttempts: Array<() => Promise<`0x${string}`>> = [
-    () =>
-      walletClient.writeContract({
-        address: addr,
-        abi: MINT_ABI,
-        functionName: "mint",
-        args: [BigInt(params.quantity)],
-        value: totalValue,
-      }),
-    () =>
-      walletClient.writeContract({
-        address: addr,
-        abi: MINT_ABI,
-        functionName: "publicMint",
-        args: [BigInt(params.quantity)],
-        value: totalValue,
-      }),
-    () =>
-      walletClient.writeContract({
-        address: addr,
-        abi: MINT_ABI,
-        functionName: "mintPublic",
-        args: [BigInt(params.quantity)],
-        value: totalValue,
-      }),
-    () =>
-      walletClient.writeContract({
-        address: addr,
-        abi: MINT_ABI,
-        functionName: "mint",
-        args: [account.address, BigInt(params.quantity)],
-        value: totalValue,
-      }),
-    () =>
-      walletClient.writeContract({
-        address: addr,
-        abi: MINT_ABI,
-        functionName: "safeMint",
-        args: [account.address],
-        value: totalValue,
-      }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "mint",
+      args: [BigInt(params.quantity)], value: totalValue,
+    }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "publicMint",
+      args: [BigInt(params.quantity)], value: totalValue,
+    }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "mintPublic",
+      args: [BigInt(params.quantity)], value: totalValue,
+    }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "mint",
+      args: [account.address, BigInt(params.quantity)], value: totalValue,
+    }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "safeMint",
+      args: [account.address], value: totalValue,
+    }),
+    () => walletClient.writeContract({
+      address: addr, abi: MINT_ABI, functionName: "mintTo",
+      args: [account.address, BigInt(params.quantity)], value: totalValue,
+    }),
   ];
 
   let lastError: unknown;
   for (const attempt of mintAttempts) {
     try {
       const txHash = await attempt();
-      await publicClient.waitForTransactionReceipt({ hash: txHash });
-      return { txHash };
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+      return { txHash, gasUsed: receipt.gasUsed.toString() };
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Stop immediately on fatal errors
+      if (classifyMintError(msg) === "fatal") {
+        throw new Error(msg);
+      }
       lastError = err;
     }
   }
 
   throw new Error(
-    `All mint function signatures failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+    `All mint signatures failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
   );
 }
 
-/** Format contract info for Telegram display */
+// ─── Format helpers ───────────────────────────────────────────────────────────
+const PHASE_LABELS: Record<MintPhase, string> = {
+  unknown: "Unknown",
+  paused: "Paused",
+  allowlist: "Allowlist only",
+  public: "Public — LIVE",
+  soldout: "Sold out",
+};
+
 export function formatContractInfo(info: NftContractInfo): string {
+  const priceDisplay = info.mintPriceWei === 0n
+    ? "Free"
+    : `${parseFloat(info.mintPrice).toFixed(6)} ETH`;
+
+  const supplyLine = info.maxSupply !== "0"
+    ? `${info.totalSupply} / ${info.maxSupply} (${info.remaining} left)`
+    : `${info.totalSupply} minted`;
+
   const lines = [
-    `Collection: ${info.name} (${info.symbol})`,
+    `<b>${info.name}</b> (${info.symbol})`,
     `Standard: ${info.standard}`,
-    `Address: ${info.address.slice(0, 8)}...${info.address.slice(-6)}`,
-    `Total Supply: ${info.totalSupply}${info.maxSupply !== "0" ? ` / ${info.maxSupply}` : ""}`,
-    `Mint Price: ${parseFloat(info.mintPrice) === 0 ? "Free" : `${info.mintPrice} ETH`}`,
-    `Status: ${info.isLive ? "Active" : "Not detected as NFT"}`,
+    `Address: <code>${info.address}</code>`,
+    `Supply: ${supplyLine}`,
+    `Price: ${priceDisplay}`,
+    `Phase: ${PHASE_LABELS[info.phase]}`,
   ];
   return lines.join("\n");
 }
