@@ -9,23 +9,25 @@ import {
   isValidPin,
   hashPin,
 } from "../../services/wallet";
+import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function createWalletConversation(
   conversation: Conversation<MyContext>,
   ctx: MyContext
 ) {
+  try {
   const telegramId = BigInt(ctx.from!.id);
 
   await ctx.reply(
     "Create a new wallet\n\n" +
       "You'll need a 6-digit PIN to secure your wallet.\n" +
       "This PIN encrypts your private key — never share it.\n\n" +
-      "Enter your 6-digit PIN:"
+      "Enter your 6-digit PIN (or /cancel to abort):"
   );
 
   let pin = "";
   while (true) {
-    const pinMsg = await conversation.waitFor("message:text");
+    const pinMsg = await waitOrCancel(conversation, ctx);
     pin = pinMsg.message.text.trim();
 
     // Delete the PIN message immediately for security
@@ -42,7 +44,7 @@ export async function createWalletConversation(
 
   await ctx.reply("Confirm your PIN by entering it again:");
   while (true) {
-    const confirmMsg = await conversation.waitFor("message:text");
+    const confirmMsg = await waitOrCancel(conversation, ctx);
     const confirm = confirmMsg.message.text.trim();
 
     try {
@@ -52,7 +54,7 @@ export async function createWalletConversation(
     if (confirm !== pin) {
       await ctx.reply("PINs do not match. Enter a new 6-digit PIN:");
       while (true) {
-        const retryMsg = await conversation.waitFor("message:text");
+        const retryMsg = await waitOrCancel(conversation, ctx);
         pin = retryMsg.message.text.trim();
         try { await retryMsg.deleteMessage(); } catch {}
         if (!isValidPin(pin)) {
@@ -140,4 +142,7 @@ export async function createWalletConversation(
     `Your wallet is ready.\nAddress: <code>${wallet.address}</code>\n\nUse /wallet to manage wallets.`,
     { parse_mode: "HTML" }
   );
+  } catch (err) {
+    if (!(err instanceof CancelledError)) throw err;
+  }
 }

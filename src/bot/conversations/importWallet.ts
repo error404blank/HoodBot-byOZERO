@@ -11,6 +11,7 @@ import {
   isValidPrivateKey,
   hashPin,
 } from "../../services/wallet";
+import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function importWalletConversation(
   conversation: Conversation<MyContext>,
@@ -21,14 +22,16 @@ export async function importWalletConversation(
   await ctx.reply(
     "Import a wallet\n\n" +
       "Paste your private key (0x...) or 12/24-word seed phrase.\n" +
-      "This message will be deleted immediately for security."
+      "This message will be deleted immediately for security.\n\n" +
+      "Send /cancel at any time to abort."
   );
 
   let importedAddress = "";
   let importedPrivateKey = "";
 
+  try {
   while (true) {
-    const keyMsg = await conversation.waitFor("message:text");
+    const keyMsg = await waitOrCancel(conversation, ctx);
     const input = keyMsg.message.text.trim();
 
     // Delete immediately
@@ -72,7 +75,7 @@ export async function importWalletConversation(
 
   let pin = "";
   while (true) {
-    const pinMsg = await conversation.waitFor("message:text");
+    const pinMsg = await waitOrCancel(conversation, ctx);
     pin = pinMsg.message.text.trim();
     try { await pinMsg.deleteMessage(); } catch {}
 
@@ -85,14 +88,14 @@ export async function importWalletConversation(
 
   await ctx.reply("Confirm PIN:");
   while (true) {
-    const confirmMsg = await conversation.waitFor("message:text");
+    const confirmMsg = await waitOrCancel(conversation, ctx);
     const confirm = confirmMsg.message.text.trim();
     try { await confirmMsg.deleteMessage(); } catch {}
 
     if (confirm !== pin) {
       await ctx.reply("PINs do not match. Re-enter PIN:");
       while (true) {
-        const retryMsg = await conversation.waitFor("message:text");
+        const retryMsg = await waitOrCancel(conversation, ctx);
         pin = retryMsg.message.text.trim();
         try { await retryMsg.deleteMessage(); } catch {}
         if (!isValidPin(pin)) { await ctx.reply("6 digits required:"); continue; }
@@ -157,4 +160,7 @@ export async function importWalletConversation(
       `Use /wallet to manage your wallets.`,
     { parse_mode: "HTML" }
   );
+  } catch (err) {
+    if (!(err instanceof CancelledError)) throw err;
+  }
 }

@@ -10,6 +10,7 @@ import { getTokenSafety } from "../../services/data/gmgn";
 import { decryptPrivateKey, isValidAddress, isValidPin } from "../../services/wallet";
 import { feeTierToPercent, shortAddress } from "../../utils/format";
 import { CONTRACTS } from "../../services/chain";
+import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function addLiquidityV3Conversation(
   conversation: Conversation<MyContext>,
@@ -40,11 +41,13 @@ export async function addLiquidityV3Conversation(
     parse_mode: "HTML",
   });
 
+  try {
   // ── 2. Token selection ────────────────────────────────────────────────────
   await ctx.reply(
     "Add Liquidity — Uniswap V3\n\n" +
       "Enter the token pair (e.g. <code>0xToken0 0xToken1</code>)\n" +
-      "Or type <b>top</b> to see top pools on Robinhood Chain:",
+      "Or type <b>top</b> to see top pools on Robinhood Chain.\n\n" +
+      "Send /cancel at any time to abort.",
     { parse_mode: "HTML" }
   );
 
@@ -52,7 +55,7 @@ export async function addLiquidityV3Conversation(
   let token1 = "";
 
   while (true) {
-    const pairMsg = await conversation.waitFor("message:text");
+    const pairMsg = await waitOrCancel(conversation, ctx);
     const input = pairMsg.message.text.trim().toLowerCase();
 
     if (input === "top") {
@@ -84,7 +87,7 @@ export async function addLiquidityV3Conversation(
         reply_markup: keyboard,
       });
 
-      const selMsg = await conversation.waitFor("message:text");
+      const selMsg = await waitOrCancel(conversation, ctx);
       const sel = parseInt(selMsg.message.text.trim()) - 1;
       if (sel >= 0 && sel < pools.length) {
         const selected = pools[sel];
@@ -191,11 +194,11 @@ export async function addLiquidityV3Conversation(
     tickUpper = nearestUsableTick(887272, pool.tickSpacing);
   } else if (rangeChoice === "range_custom") {
     await ctx.reply("Enter lower price:");
-    const lowerMsg = await conversation.waitFor("message:text");
+    const lowerMsg = await waitOrCancel(conversation, ctx);
     const lowerPrice = parseFloat(lowerMsg.message.text);
 
     await ctx.reply("Enter upper price:");
-    const upperMsg = await conversation.waitFor("message:text");
+    const upperMsg = await waitOrCancel(conversation, ctx);
     const upperPrice = parseFloat(upperMsg.message.text);
 
     tickLower = nearestUsableTick(priceToTick(lowerPrice), pool.tickSpacing);
@@ -218,11 +221,11 @@ export async function addLiquidityV3Conversation(
 
   // ── 7. Amounts ────────────────────────────────────────────────────────────
   await ctx.reply(`Enter amount of token0 (${shortAddress(token0)}):`);
-  const amount0Msg = await conversation.waitFor("message:text");
+  const amount0Msg = await waitOrCancel(conversation, ctx);
   const amount0 = amount0Msg.message.text.trim();
 
   await ctx.reply(`Enter amount of token1 (${shortAddress(token1)}):`);
-  const amount1Msg = await conversation.waitFor("message:text");
+  const amount1Msg = await waitOrCancel(conversation, ctx);
   const amount1 = amount1Msg.message.text.trim();
 
   // ── 8. Slippage ───────────────────────────────────────────────────────────
@@ -239,7 +242,7 @@ export async function addLiquidityV3Conversation(
   let slippageBps = 50;
   if (slippageAnswer.callbackQuery.data === "slip_custom") {
     await ctx.reply("Enter slippage % (e.g. 0.5):");
-    const slipMsg = await conversation.waitFor("message:text");
+    const slipMsg = await waitOrCancel(conversation, ctx);
     slippageBps = Math.round(parseFloat(slipMsg.message.text) * 100);
   } else {
     slippageBps = parseInt(slippageAnswer.callbackQuery.data.replace("slip_", ""));
@@ -269,7 +272,7 @@ export async function addLiquidityV3Conversation(
 
   // ── 10. PIN ───────────────────────────────────────────────────────────────
   await ctx.reply("Enter your 6-digit PIN:");
-  const pinMsg = await conversation.waitFor("message:text");
+  const pinMsg = await waitOrCancel(conversation, ctx);
   const pin = pinMsg.message.text.trim();
   try { await pinMsg.deleteMessage(); } catch {}
 
@@ -336,5 +339,8 @@ export async function addLiquidityV3Conversation(
     await ctx.reply(
       `Transaction failed:\n${err instanceof Error ? err.message : String(err)}`
     );
+  }
+  } catch (err) {
+    if (!(err instanceof CancelledError)) throw err;
   }
 }

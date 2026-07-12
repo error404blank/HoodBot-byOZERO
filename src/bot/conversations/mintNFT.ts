@@ -6,6 +6,7 @@ import { users, wallets, nftMints, autoMintWatchers } from "../../db/schema";
 import { eq, and } from "drizzle-orm";
 import { detectNftContract, mintNft, formatContractInfo } from "../../services/nft";
 import { decryptPrivateKey, isValidAddress, isValidPin } from "../../services/wallet";
+import { waitOrCancel, CancelledError } from "./cancelHelper";
 
 export async function mintNFTConversation(
   conversation: Conversation<MyContext>,
@@ -31,15 +32,17 @@ export async function mintNFTConversation(
     return;
   }
 
+  try {
   // ── 1. Contract address ───────────────────────────────────────────────────
   await ctx.reply(
     "NFT Minting\n\n" +
-      "Paste the NFT contract address to mint from:"
+      "Paste the NFT contract address to mint from.\n\n" +
+      "Send /cancel at any time to abort."
   );
 
   let contractAddress = "";
   while (true) {
-    const addrMsg = await conversation.waitFor("message:text");
+    const addrMsg = await waitOrCancel(conversation, ctx);
     const input = addrMsg.message.text.trim();
     if (!isValidAddress(input)) {
       await ctx.reply("Invalid address. Please paste a valid 0x... address:");
@@ -83,7 +86,7 @@ export async function mintNFTConversation(
   await ctx.reply("How many to mint? (enter a number, max 20):");
   let quantity = 1;
   while (true) {
-    const qtyMsg = await conversation.waitFor("message:text");
+    const qtyMsg = await waitOrCancel(conversation, ctx);
     const n = parseInt(qtyMsg.message.text.trim());
     if (isNaN(n) || n < 1 || n > 20) {
       await ctx.reply("Enter a number between 1 and 20:");
@@ -152,7 +155,7 @@ export async function mintNFTConversation(
   }
 
   await ctx.reply("Enter your 6-digit PIN:");
-  const pinMsg = await conversation.waitFor("message:text");
+  const pinMsg = await waitOrCancel(conversation, ctx);
   const pin = pinMsg.message.text.trim();
   try { await pinMsg.deleteMessage(); } catch {}
 
@@ -207,5 +210,8 @@ export async function mintNFTConversation(
     await ctx.reply(
       `Mint failed:\n${err instanceof Error ? err.message : String(err)}`
     );
+  }
+  } catch (err) {
+    if (!(err instanceof CancelledError)) throw err;
   }
 }
