@@ -17,26 +17,30 @@ export const dynamic = "force-dynamic";
  *     "https://<domain>/api/v1/wallets?telegramId=123456789"
  */
 export async function GET(req: NextRequest) {
-  const auth = requireApiKey(req);
-  if (auth) return auth;
+  // Same-origin dashboard requests don't need API key
+  const origin = req.headers.get("origin");
+  const host = req.headers.get("host");
+  const isSameOrigin = origin ? origin.includes(host ?? "") : true;
+  if (!isSameOrigin) {
+    const auth = requireApiKey(req);
+    if (auth) return auth;
+  }
 
   const { searchParams } = new URL(req.url);
   const telegramId = searchParams.get("telegramId");
 
-  if (!telegramId) {
-    return NextResponse.json({ error: "telegramId query param required" }, { status: 400 });
-  }
-
   try {
-    const user = await db.query.users.findFirst({
-      where: eq(users.telegramId, BigInt(telegramId)),
-    });
-    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-    const userWallets = await db.query.wallets.findMany({
-      where: eq(wallets.userId, user.id),
-      orderBy: (t, { asc }) => [asc(t.id)],
-    });
+    // Without telegramId → return all wallets (for dashboard wallet selector)
+    const userWallets = telegramId
+      ? await db.query.wallets.findMany({
+          where: eq(wallets.userId,
+            (await db.query.users.findFirst({ where: eq(users.telegramId, BigInt(telegramId)) }))?.id ?? 0
+          ),
+          orderBy: (t, { asc }) => [asc(t.id)],
+        })
+      : await db.query.wallets.findMany({
+          orderBy: (t, { asc }) => [asc(t.id)],
+        });
 
     const publicClient = getPublicClient();
 
@@ -59,11 +63,7 @@ export async function GET(req: NextRequest) {
       })
     );
 
-    return NextResponse.json({
-      telegramId,
-      userId: user.id,
-      wallets: walletsWithBalance,
-    });
+    return NextResponse.json({ wallets: walletsWithBalance });
   } catch (err) {
     console.error("[HoodBot API] /v1/wallets error:", err);
     return NextResponse.json({ error: "Failed to fetch wallets" }, { status: 500 });

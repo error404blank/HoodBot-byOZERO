@@ -286,6 +286,8 @@ export async function simulateMint(
     { fn: "mint", args: [from, BigInt(quantity)] },
   ] as const;
 
+  let lastMsg = "";
+
   for (const attempt of attempts) {
     try {
       const gas = await publicClient.estimateContractGas({
@@ -297,24 +299,41 @@ export async function simulateMint(
         account: from,
         value: totalValue,
       });
-      return {
-        success: true,
-        gasEstimate: gas.toString(),
-      };
+      return { success: true, gasEstimate: gas.toString() };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      lastMsg = msg;
+
+      // Fatal errors — stop immediately, no point trying more signatures
       const errorType = classifyMintError(msg);
       if (errorType === "fatal") {
         return { success: false, gasEstimate: "0", errorMessage: msg, errorType: "fatal" };
       }
-      // retryable — try next signature
+
+      // "Function not found" errors — try next signature silently
+      const isMissingFn =
+        msg.includes("is not a function") ||
+        msg.includes("does not exist") ||
+        msg.includes("ContractFunctionExecutionError") ||
+        msg.includes("execution reverted") ||
+        msg.includes("selector not found") ||
+        msg.includes("UNPREDICTABLE_GAS_LIMIT");
+
+      if (!isMissingFn) {
+        // Unexpected error — return immediately
+        return { success: false, gasEstimate: "0", errorMessage: msg, errorType: "retryable" };
+      }
+      // otherwise continue to next signature
     }
   }
 
+  // All signatures tried — return a helpful message
   return {
     success: false,
     gasEstimate: "0",
-    errorMessage: "All mint function signatures failed simulation",
+    errorMessage: lastMsg
+      ? `Simulation failed: ${lastMsg.slice(0, 120)}`
+      : "Could not detect a valid mint function on this contract. It may use a custom signature or not be a mintable contract.",
     errorType: "retryable",
   };
 }

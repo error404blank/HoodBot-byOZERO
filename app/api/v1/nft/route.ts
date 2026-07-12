@@ -98,27 +98,30 @@ export async function POST(req: NextRequest) {
 
   // ── mint ─────────────────────────────────────────────────────────────────────
   if (action === "mint") {
-    const telegramId = body.telegramId as string;
     const walletId = Number(body.walletId);
     const pin = body.pin as string;
     const quantity = Number(body.quantity ?? 1);
 
-    if (!telegramId || !walletId || !pin) {
+    if (!walletId || !pin) {
       return NextResponse.json(
-        { error: "telegramId, walletId, and pin are required for mint" },
+        { error: "walletId and pin are required for mint" },
         { status: 400 }
       );
     }
 
+    // Look up wallet directly by ID — no telegramId needed from web dashboard
+    const wallet = await db.query.wallets.findFirst({
+      where: eq(wallets.id, walletId),
+    });
+    if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
+
+    // Look up user to get telegramId for decryption
     const user = await db.query.users.findFirst({
-      where: eq(users.telegramId, BigInt(telegramId)),
+      where: eq(users.id, wallet.userId),
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const wallet = await db.query.wallets.findFirst({
-      where: (t, { and }) => and(eq(t.id, walletId), eq(t.userId, user.id)),
-    });
-    if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
+    const telegramId = user.telegramId.toString();
 
     let privateKey: `0x${string}`;
     try {

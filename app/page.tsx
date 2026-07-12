@@ -6,6 +6,7 @@ import { StatCard } from "@/components/dashboard/StatCard";
 import { PositionsTable } from "@/components/dashboard/PositionsTable";
 import { NftMintsTable } from "@/components/dashboard/NftMintsTable";
 import { MintPanel } from "@/components/dashboard/MintPanel";
+import { CollapsibleSection } from "@/components/dashboard/CollapsibleSection";
 import Link from "next/link";
 import { BotStatusBanner } from "@/components/dashboard/BotStatusBanner";
 import { WebhookPanel } from "@/components/dashboard/WebhookPanel";
@@ -193,33 +194,36 @@ export default async function Page() {
           <MintPanel />
         </section>
 
-        {/* Two-col: Commands + Setup */}
+        {/* Two-col: Commands + Setup (collapsible) */}
         <section aria-label="Commands and setup">
-          <div className="flex items-center mb-3">
-            <h2 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
-              Reference &amp; Setup
-            </h2>
-          </div>
-          <CommandReference />
+          <CollapsibleSection title="Reference &amp; Setup">
+            <div className="p-4">
+              <CommandReference />
+            </div>
+          </CollapsibleSection>
         </section>
 
         <section aria-label="Setup guide">
           <SetupGuide completedSteps={completedSteps} />
         </section>
 
-        {/* VPS setup */}
+        {/* VPS setup (collapsible) */}
         <section aria-label="VPS setup">
           <VpsPanel />
         </section>
 
-        {/* .env generator */}
+        {/* .env generator (collapsible) */}
         <section aria-label="Environment variables">
-          <EnvGenerator
-            deploymentUrl={deploymentUrl}
-            hasBotToken={tokenConnected}
-            hasBotUsername={Boolean(botUsername)}
-            hasDatabase={dbConnected}
-          />
+          <CollapsibleSection title=".env File Generator">
+            <div className="p-4">
+              <EnvGenerator
+                deploymentUrl={deploymentUrl}
+                hasBotToken={tokenConnected}
+                hasBotUsername={Boolean(botUsername)}
+                hasDatabase={dbConnected}
+              />
+            </div>
+          </CollapsibleSection>
         </section>
 
         {/* AI Agent CTA */}
@@ -240,12 +244,9 @@ export default async function Page() {
           </div>
         </section>
 
-        {/* Contract addresses */}
+        {/* Contract addresses (collapsible) */}
         <section aria-label="Contract addresses">
-          <div className="rounded-lg border border-border bg-card">
-            <div className="px-4 py-3 border-b border-border">
-              <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Contract Addresses — Robinhood Chain</h3>
-            </div>
+          <CollapsibleSection title="Contract Addresses — Robinhood Chain">
             <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-border/50">
               {[
                 { label: "WETH", addr: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73" },
@@ -268,7 +269,7 @@ export default async function Page() {
                 </div>
               ))}
             </div>
-          </div>
+          </CollapsibleSection>
         </section>
 
         {/* Footer */}

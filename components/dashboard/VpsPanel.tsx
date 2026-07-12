@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 function CopyableCommand({ cmd }: { cmd: string }) {
   const [copied, setCopied] = useState(false);
@@ -71,16 +72,7 @@ function StepBlock({
 
 export function VpsPanel() {
   return (
-    <div className="rounded-lg border border-border bg-card">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2">
-        <h3 className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
-          Setup VPS — Panduan Lengkap
-        </h3>
-        <span className="shrink-0 text-xs font-mono text-muted-foreground/60 border border-border/50 rounded px-2 py-0.5">
-          Jalankan di terminal VPS
-        </span>
-      </div>
+    <CollapsibleSection title="Setup VPS — Panduan Lengkap" badge="Jalankan di terminal VPS">
 
       {/* Intro */}
       <div className="px-4 pt-4 pb-2">
@@ -227,6 +219,6 @@ export function VpsPanel() {
           ))}
         </div>
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }
