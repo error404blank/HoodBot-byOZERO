@@ -361,28 +361,27 @@ bot.callbackQuery("cmd_top_pools", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.reply("Fetching top pools from GeckoTerminal...");
 
-  // Try multiple known GeckoTerminal network slugs for Robinhood Chain
-  let pools = await getTopPools(10, "robinhood");
-  if (pools.length === 0) pools = await getTopPools(10, "robinhood-chain");
-  if (pools.length === 0) pools = await getTopPools(10, "eth");// fallback
+  const pools = await getTopPools(10);
 
   if (pools.length === 0) {
     await ctx.reply(
-      "GeckoTerminal belum mengindeks Robinhood Chain (Chain ID 4663).\n\n" +
-      "Cek pool secara manual:\n" +
-      "https://www.geckoterminal.com/robinhood-chain/pools\n\n" +
-      "Atau gunakan block explorer:\n" +
-      "https://robinhoodchain.blockscout.com"
+      "Could not fetch pool data. Try again in a moment.\n\n" +
+      "Manual: https://www.geckoterminal.com/robinhood/pools"
     );
     return;
   }
 
-  const lines = pools.map(
-    (p, i) =>
-      `${i + 1}. ${p.name}\n   Price: $${parseFloat(p.priceUsd).toFixed(6)}\n   TVL: ${formatUsd(p.tvlUsd)} | Vol 24h: ${formatUsd(p.volumeUsd24h)}`
-  );
+  const lines = pools.map((p, i) => {
+    const change = parseFloat(p.priceChangePercent24h);
+    const arrow = change >= 0 ? "+" : "";
+    return (
+      `${i + 1}. ${p.name}\n` +
+      `   Price: $${parseFloat(p.priceUsd).toFixed(6)} (${arrow}${change.toFixed(2)}%)\n` +
+      `   TVL: ${formatUsd(p.tvlUsd)} | Vol 24h: ${formatUsd(p.volumeUsd24h)}`
+    );
+  });
 
-  await ctx.reply(`Top Pools on Robinhood Chain:\n\n${lines.join("\n\n")}`);
+  await ctx.reply(`Top Pools — Robinhood Chain (Uniswap V3)\n\n${lines.join("\n\n")}`);
 });
 
 // Token check — stored per-user flag to avoid global message listener leak
@@ -402,15 +401,34 @@ bot.callbackQuery("cmd_token_check", async (ctx) => {
 
 bot.callbackQuery("cmd_trending", async (ctx) => {
   await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "Trending on Robinhood Chain\n\n" +
-    "GeckoTerminal (pools & price):\n" +
-    "https://www.geckoterminal.com/robinhood-chain/pools\n\n" +
-    "Block Explorer:\n" +
-    "https://robinhoodchain.blockscout.com\n\n" +
-    "Uniswap V3 Interface:\n" +
-    "https://app.uniswap.org/#/pools"
-  );
+  await ctx.reply("Fetching trending pools...");
+
+  // Fetch trending pools from GeckoTerminal DEX endpoint, sorted by tx count
+  const data = await fetch(
+    "https://api.geckoterminal.com/api/v2/networks/robinhood/dexes/uniswap-v3-robinhood/pools?sort=h24_tx_count_desc&page=1",
+    { headers: { Accept: "application/json" } }
+  ).then((r) => r.ok ? r.json() : null).catch(() => null) as { data: { attributes: Record<string, unknown> }[] } | null;
+
+  const pools = data?.data ?? [];
+
+  if (pools.length === 0) {
+    await ctx.reply(
+      "Could not fetch trending pools.\n\n" +
+      "Manual: https://www.geckoterminal.com/robinhood/pools"
+    );
+    return;
+  }
+
+  const lines = pools.slice(0, 8).map((p, i) => {
+    const a = p.attributes as Record<string, unknown>;
+    const name = String(a.name ?? "Unknown");
+    const price = parseFloat(String(a.base_token_price_usd ?? "0"));
+    const vol = parseFloat(String((a.volume_usd as Record<string, string>)?.h24 ?? "0"));
+    const txns = Number(a.transactions?.h24?.buys ?? 0) + Number(a.transactions?.h24?.sells ?? 0);
+    return `${i + 1}. ${name}\n   Price: $${price.toFixed(6)} | Vol: ${formatUsd(vol)} | Txns: ${txns}`;
+  });
+
+  await ctx.reply(`Trending Pools — Robinhood Chain\n\n${lines.join("\n\n")}`);
 });
 
 bot.callbackQuery("cmd_my_mints", async (ctx) => {

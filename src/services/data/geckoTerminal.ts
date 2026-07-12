@@ -1,5 +1,6 @@
 const BASE_URL = "https://api.geckoterminal.com/api/v2";
 const ROBINHOOD_NETWORK = "robinhood"; // GeckoTerminal network slug
+const ROBINHOOD_DEX = "uniswap-v3-robinhood"; // DEX slug on GeckoTerminal
 
 export interface GeckoPool {
   id: string;
@@ -44,10 +45,10 @@ async function geckoFetch<T>(path: string): Promise<T | null> {
   }
 }
 
-/** Fetch top pools on Robinhood Chain by TVL */
-export async function getTopPools(limit = 10, network = ROBINHOOD_NETWORK): Promise<GeckoPool[]> {
+/** Fetch top pools on Robinhood Chain (Uniswap V3) sorted by 24h volume */
+export async function getTopPools(limit = 10): Promise<GeckoPool[]> {
   const data = await geckoFetch<{ data: { id: string; attributes: Record<string, string> }[] }>(
-    `/networks/${network}/pools?page=1&limit=${limit}&sort=h24_volume_usd_descending`
+    `/networks/${ROBINHOOD_NETWORK}/dexes/${ROBINHOOD_DEX}/pools?sort=h24_volume_usd_desc&page=1`
   );
   if (!data?.data) return [];
 
