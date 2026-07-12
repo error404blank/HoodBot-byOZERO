@@ -10,26 +10,31 @@ async function main() {
   cron.schedule("*/5 * * * *", async () => {
     console.log("[Cron] Running auto-rebalance check...");
 
-    const results = await runAutoRebalanceCheck(
-      async (userId, message) => {
-        try {
-          await bot.api.sendMessage(userId, message);
-        } catch (err) {
-          console.error(`[Cron] Failed to notify user ${userId}:`, err);
+    try {
+      const results = await runAutoRebalanceCheck(
+        async (userId, message) => {
+          try {
+            await bot.api.sendMessage(userId, message);
+          } catch (err) {
+            console.error(`[Cron] Failed to notify user ${userId}:`, err);
+          }
+        },
+        async (_userId, _walletId) => {
+          // PIN resolver: in production, implement session-based PIN caching
+          // or require users to authorize auto-rebalance upfront.
+          // Returning null means the bot will ask the user to re-authorize.
+          return null;
         }
-      },
-      async (_userId, _walletId) => {
-        // PIN resolver: in production, implement session-based PIN caching
-        // or require users to authorize auto-rebalance upfront.
-        // Returning null means the bot will ask the user to re-authorize.
-        return null;
-      }
-    );
+      );
 
-    const succeeded = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
-    if (results.length > 0) {
-      console.log(`[Cron] Rebalance: ${succeeded} succeeded, ${failed} failed`);
+      const succeeded = results.filter((r) => r.success).length;
+      const failed = results.filter((r) => !r.success).length;
+      if (results.length > 0) {
+        console.log(`[Cron] Rebalance: ${succeeded} succeeded, ${failed} failed`);
+      }
+    } catch (err) {
+      // Log but never crash the bot process — cron must survive errors
+      console.error("[Cron] Auto-rebalance check failed:", err);
     }
   });
 
