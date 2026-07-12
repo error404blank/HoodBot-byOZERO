@@ -14,6 +14,8 @@ import { getTopPools, formatUsd } from "../services/data/geckoTerminal";
 import { getTokenSafety, formatSafetyReport } from "../services/data/gmgn";
 import { getUserV3Positions } from "../services/uniswapV3";
 import { isValidAddress } from "../services/wallet";
+import { getPublicClient, getAddressUrl } from "../services/chain";
+import { formatEther } from "viem";
 
 if (!process.env.TELEGRAM_BOT_TOKEN) {
   throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -71,21 +73,122 @@ bot.command("start", async (ctx) => {
   );
 });
 
+// ── /cancel ────────────────────────────────────────────────────────────────────
+bot.command("cancel", async (ctx) => {
+  await ctx.conversation.exit();
+  await ctx.reply(
+    "Action cancelled. Use /start to return to the main menu.",
+  );
+});
+
 // ── /help ──────────────────────────────────────────────────────────────────────
 bot.command("help", async (ctx) => {
   await ctx.reply(
     `HoodBot Commands\n\n` +
       `/start — Main menu\n` +
       `/wallet — Wallet management\n` +
+      `/balance — Check ETH balance of active wallet\n` +
       `/lp — Add/manage liquidity\n` +
       `/positions — View open LP positions\n` +
-      `/fees — View uncollected fees\n` +
       `/nft — Mint NFTs\n` +
       `/market — Top pools & token data\n` +
       `/settings — Bot settings\n` +
+      `/cancel — Cancel current action\n` +
       `/help — This message\n\n` +
       `Chain: Robinhood Mainnet (4663)\n` +
-      `Explorer: https://robinhoodchain.blockscout.com`
+      `Explorer: https://robinhoodchain.blockscout.com\n\n` +
+      `Tip: You can type /cancel at any time during a multi-step action to abort it.`
+  );
+});
+
+// ── /balance ───────────────────────────────────────────────────────────────────
+bot.command("balance", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({
+    where: eq(users.telegramId, telegramId),
+  });
+
+  if (!user) {
+    await ctx.reply("No account found. Use /start to create a wallet.");
+    return;
+  }
+
+  const userWallets = await db.query.wallets.findMany({
+    where: eq(wallets.userId, user.id),
+  });
+
+  if (userWallets.length === 0) {
+    await ctx.reply("No wallets found. Use /wallet to create one.");
+    return;
+  }
+
+  await ctx.reply("Fetching balances...");
+
+  const client = getPublicClient();
+  const lines: string[] = [];
+
+  for (const w of userWallets) {
+    try {
+      const raw = await client.getBalance({ address: w.address as `0x${string}` });
+      const eth = parseFloat(formatEther(raw)).toFixed(6);
+      const activeTag = w.isActive ? " [ACTIVE]" : "";
+      lines.push(`${w.name}${activeTag}\n  ${w.address}\n  Balance: ${eth} ETH`);
+    } catch {
+      lines.push(`${w.name}\n  ${w.address}\n  Balance: (could not fetch)`);
+    }
+  }
+
+  const activeW = userWallets.find((w) => w.isActive);
+  const explorerLine = activeW
+    ? `\nView on Explorer: ${getAddressUrl(activeW.address)}`
+    : "";
+
+  await ctx.reply(
+    `Wallet Balances\n\n${lines.join("\n\n")}${explorerLine}`,
+  );
+});
+
+// ── /status ────────────────────────────────────────────────────────────────────
+bot.command("status", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({
+    where: eq(users.telegramId, telegramId),
+  });
+
+  const uptimeSeconds = Math.floor(process.uptime());
+  const hours = Math.floor(uptimeSeconds / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const seconds = uptimeSeconds % 60;
+  const uptimeStr = `${hours}h ${minutes}m ${seconds}s`;
+
+  if (!user) {
+    await ctx.reply(
+      `HoodBot Status\n\n` +
+        `Bot: Online\n` +
+        `Uptime: ${uptimeStr}\n` +
+        `Chain: Robinhood Chain (4663)\n` +
+        `Account: Not registered — use /start`
+    );
+    return;
+  }
+
+  const walletCount = (await db.query.wallets.findMany({ where: eq(wallets.userId, user.id) })).length;
+  const activeWallet = await db.query.wallets.findFirst({
+    where: and(eq(wallets.userId, user.id), eq(wallets.isActive, true)),
+  });
+  const openPositions = (await db.query.lpPositions.findMany({
+    where: and(eq(lpPositions.userId, user.id), isNull(lpPositions.closedAt)),
+  })).length;
+
+  await ctx.reply(
+    `HoodBot Status\n\n` +
+      `Bot: Online\n` +
+      `Uptime: ${uptimeStr}\n` +
+      `Chain: Robinhood Chain (4663)\n\n` +
+      `Account: @${user.username ?? user.firstName ?? "user"}\n` +
+      `Wallets: ${walletCount}\n` +
+      `Active wallet: ${activeWallet ? activeWallet.name + " (" + shortAddress(activeWallet.address) + ")" : "None"}\n` +
+      `Open LP positions: ${openPositions}`
   );
 });
 
