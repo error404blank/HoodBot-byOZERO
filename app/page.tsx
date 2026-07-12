@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 import Image from "next/image";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { PositionsTable } from "@/components/dashboard/PositionsTable";
@@ -51,7 +54,8 @@ async function getDashboardData() {
       positions: recentPositions,
       mints: recentMints,
     };
-  } catch {
+  } catch (err) {
+    console.error("[v0] getDashboardData error:", err);
     return null;
   }
 }
