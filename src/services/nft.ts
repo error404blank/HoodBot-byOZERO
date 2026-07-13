@@ -388,7 +388,7 @@ export interface NftContractInfo {
   abiSource: "explorer" | "fallback"; // where the ABI came from
 }
 
-// ─── Error classification (from MINTER's classify_mint_error) ─────────────────
+// ��── Error classification (from MINTER's classify_mint_error) ─────────────────
 export function classifyMintError(msg: string): "fatal" | "retryable" {
   const lower = msg.toLowerCase();
 
@@ -524,11 +524,40 @@ export async function detectNftContract(
     maxSupply = ms.toString();
   } catch {}
 
-  // Mint price — build probe list from:
-  // 1. Verified ABI (zero-arg view functions returning uint256 with price-like names)
-  // 2. Hardcoded PRICE_ABI fallback list
+  // ── Mint price detection ──────────────────────────────────────────────────
+  // Strategy: raw eth_call with 4-byte selectors.
+  // This works on BOTH verified and unverified contracts — no ABI needed.
+  // If the selector exists on the contract, the RPC returns a 32-byte result.
+  // A non-zero 32-byte result means the contract has a price function.
+  //
+  // Selectors pre-computed via keccak256(sig).slice(0,4):
+  const PRICE_SELECTORS: Array<{ name: string; selector: `0x${string}` }> = [
+    { name: "price()",              selector: "0xa035b1fe" },
+    { name: "mintPrice()",          selector: "0x6817c76c" },
+    { name: "cost()",               selector: "0x13faede6" },
+    { name: "PRICE()",              selector: "0x26a4e8d2" },
+    { name: "publicSalePrice()",    selector: "0x4c9e52e2" },
+    { name: "salePrice()",          selector: "0x6188d845" },
+    { name: "pricePerToken()",      selector: "0x83a9e049" },
+    { name: "pricePerMint()",       selector: "0xd6d1ee14" },
+    { name: "getPrice()",           selector: "0x98d5fdca" },
+    { name: "publicPrice()",        selector: "0x99288dbb" },
+    { name: "publicMintPrice()",    selector: "0x4e1ac052" },
+    { name: "tokenPrice()",         selector: "0xc9b298f1" },
+    { name: "MINT_PRICE()",         selector: "0xb8a8c08c" },
+    { name: "mintCost()",           selector: "0xd9d98ce4" },
+    { name: "mintFee()",            selector: "0x8d859f31" },
+    { name: "fee()",                selector: "0xddca3f43" },
+    { name: "weiCostPerToken()",    selector: "0x0f7309e8" },
+    { name: "TOKEN_PRICE()",        selector: "0x56bc13a8" },
+    { name: "pricePublic()",        selector: "0x55367ba9" },
+    { name: "publicMintCost()",     selector: "0x4f6c7c96" },
+  ];
+
+  // If ABI is verified, also add functions from ABI that look like price getters
+  // (zero-arg view/pure, returns uint256, name contains price keyword)
   const priceKeywords = ["price", "cost", "fee", "mint", "sale", "token", "wei"];
-  const abiPriceFns: string[] = [];
+  const extraFromAbi: Array<{ name: string; selector: `0x${string}` }> = [];
   if (abiResult.abi) {
     for (const item of abiResult.abi as Array<{ type: string; name: string; inputs: unknown[]; outputs: Array<{ type: string }>; stateMutability: string }>) {
       if (
@@ -537,32 +566,33 @@ export async function detectNftContract(
         item.inputs.length === 0 &&
         item.outputs?.length === 1 &&
         item.outputs[0].type === "uint256" &&
-        priceKeywords.some((kw) => item.name.toLowerCase().includes(kw))
+        priceKeywords.some((kw) => item.name.toLowerCase().includes(kw)) &&
+        !PRICE_SELECTORS.some((s) => s.name === `${item.name}()`)
       ) {
-        if (!abiPriceFns.includes(item.name)) abiPriceFns.push(item.name);
+        // Compute selector via keccak256
+        try {
+          const { keccak256, toBytes } = await import("viem");
+          const sel = keccak256(toBytes(`${item.name}()`)).slice(0, 10) as `0x${string}`;
+          extraFromAbi.push({ name: `${item.name}()`, selector: sel });
+        } catch {}
       }
     }
   }
 
-  // All known hardcoded probe names
-  const hardcodedPriceFns = [
-    "price", "mintPrice", "cost", "PRICE", "publicSalePrice",
-    "salePrice", "pricePerToken", "pricePerMint", "getPrice",
-    "publicPrice", "publicMintPrice", "tokenPrice", "TOKEN_PRICE",
-    "MINT_PRICE", "mintCost", "mintFee", "fee", "weiCostPerToken",
-  ];
-
-  // Deduplicated probe order: ABI-derived first (most accurate), then hardcoded
-  const allPriceFns = [...new Set([...abiPriceFns, ...hardcodedPriceFns])];
+  const allPriceSelectors = [...extraFromAbi, ...PRICE_SELECTORS];
 
   let mintPriceWei = 0n;
-  for (const fn of allPriceFns) {
+  for (const { selector } of allPriceSelectors) {
     try {
-      const singleAbi = parseAbi([`function ${fn}() view returns (uint256)`]);
-      const result = await publicClient.readContract({ address: addr, abi: singleAbi, functionName: fn });
-      if (typeof result === "bigint" && result > 0n) {
-        mintPriceWei = result;
-        break;
+      const raw = await publicClient.call({ to: addr, data: selector });
+      if (raw.data && raw.data !== "0x" && raw.data.length >= 66) {
+        const val = BigInt(raw.data);
+        if (val > 0n) {
+          mintPriceWei = val;
+          break;
+        }
+        // val === 0n means function exists but returns 0 (free mint) — keep probing
+        // in case another function has the real price
       }
     } catch {}
   }
@@ -620,7 +650,7 @@ export async function detectNftContract(
   };
 }
 
-// ─── WL eligibility check ─────────────────────────────────────────────────────
+// ─── WL eligibility check ───────────────���─────────────────────────────────────
 export async function checkAllowlist(
   contractAddress: string,
   walletAddress: string
