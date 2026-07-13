@@ -147,9 +147,14 @@ export function DashboardShell() {
         {/* Mobile top bar — full width sticky header */}
         <header className="md:hidden shrink-0 flex items-center justify-between px-4 py-3 border-b border-border/50 bg-sidebar sticky top-0 z-20">
           <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-md bg-primary/20 border border-primary/30 flex items-center justify-center">
-              <span className="text-primary font-mono font-bold text-xs">H</span>
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/hoodbot-logo.png"
+              alt="HoodBot"
+              width={28}
+              height={28}
+              className="rounded-md object-cover shrink-0"
+            />
             <div>
               <span className="text-sm font-mono font-bold text-foreground">HoodBot</span>
               <span className="text-[10px] font-mono text-muted-foreground ml-2 opacity-70">{tabLabel}</span>

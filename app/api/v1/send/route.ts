@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { parseEther, isAddress } from "viem";
+import { parseEther, parseGwei, isAddress } from "viem";
 import { db } from "@/src/db";
 import { wallets, users } from "@/src/db/schema";
 import { getSessionUser } from "@/lib/session";
@@ -18,9 +18,12 @@ export async function POST(req: NextRequest) {
     amount: string;
     pin?: string;
     dryRun?: boolean;
+    gasPreset?: "low" | "medium" | "high" | "custom";
+    maxFeePerGasGwei?: number;
+    maxPriorityFeePerGasGwei?: number;
   };
 
-  const { walletId, toAddress, amount, pin, dryRun = true } = body;
+  const { walletId, toAddress, amount, pin, dryRun = true, gasPreset = "medium" } = body;
   const chain = (body.chain ?? "robinhood") as MintChainSlug;
 
   if (!walletId || !toAddress || !amount) {
@@ -50,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   const publicClient = getPublicClientForChain(chain);
 
-  // Dry run — just estimate gas
+  // Dry run — estimate gas + compute fee breakdown
   if (dryRun) {
     try {
       const gas = await publicClient.estimateGas({
@@ -58,7 +61,17 @@ export async function POST(req: NextRequest) {
         to: toAddress as `0x${string}`,
         value: valueWei,
       });
-      return NextResponse.json({ gasEstimate: gas.toString() });
+      // Apply safe buffer (+20%) for L2/Orbit chains where gas underestimate is common
+      const gasWithBuffer = BigInt(Math.ceil(Number(gas) * 1.2));
+      let feeInfo: { maxFeePerGas?: string; maxPriorityFeePerGas?: string } = {};
+      try {
+        const fees = await publicClient.estimateFeesPerGas();
+        feeInfo = {
+          maxFeePerGas: fees.maxFeePerGas?.toString(),
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas?.toString(),
+        };
+      } catch { /* legacy chain — no EIP-1559 */ }
+      return NextResponse.json({ gasEstimate: gas.toString(), gasWithBuffer: gasWithBuffer.toString(), ...feeInfo });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return NextResponse.json({ error: `Simulation failed: ${msg.slice(0, 120)}` });
@@ -87,11 +100,32 @@ export async function POST(req: NextRequest) {
   const { client, account } = getWalletClientForChain(privateKey, chain);
 
   try {
+    // Build gas overrides — apply multiplier or use custom gwei values
+    let gasOverrides: Record<string, bigint> = {};
+    if (gasPreset === "custom" && body.maxFeePerGasGwei && body.maxPriorityFeePerGasGwei) {
+      gasOverrides = {
+        maxFeePerGas: parseGwei(String(body.maxFeePerGasGwei)),
+        maxPriorityFeePerGas: parseGwei(String(body.maxPriorityFeePerGasGwei)),
+      };
+    } else if (gasPreset !== "low") {
+      const multiplier = gasPreset === "high" ? 1.5 : 1.2;
+      try {
+        const fees = await publicClient.estimateFeesPerGas();
+        if (fees.maxFeePerGas) {
+          gasOverrides = {
+            maxFeePerGas: BigInt(Math.ceil(Number(fees.maxFeePerGas) * multiplier)),
+            maxPriorityFeePerGas: BigInt(Math.ceil(Number(fees.maxPriorityFeePerGas ?? parseGwei("1")) * multiplier)),
+          };
+        }
+      } catch { /* legacy chain */ }
+    }
+
     const txHash = await client.sendTransaction({
       account,
       to: toAddress as `0x${string}`,
       value: valueWei,
       chain: undefined,
+      ...gasOverrides,
     });
     return NextResponse.json({ txHash });
   } catch (err) {

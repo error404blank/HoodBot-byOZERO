@@ -1,4 +1,4 @@
-import { parseAbi, parseEther, formatEther, encodeFunctionData } from "viem";
+import { parseAbi, parseEther, parseGwei, formatEther, encodeFunctionData } from "viem";
 import {
   getPublicClient,
   getWalletClient,
@@ -351,6 +351,15 @@ export async function simulateMint(
 }
 
 // ─── Mint NFT ─────────────────────────────────────────────────────────────────
+// Gas preset multipliers (applied on top of estimateGas)
+export type GasPreset = "low" | "medium" | "high" | "custom";
+export const GAS_MULTIPLIERS: Record<GasPreset, number> = {
+  low: 1.0,      // exact estimate — risk of underpricing on congested chains
+  medium: 1.2,   // +20% buffer — recommended
+  high: 1.5,     // +50% buffer — fast confirmation
+  custom: 1.0,   // uses explicit maxFeePerGas / maxPriorityFeePerGas from caller
+};
+
 export interface MintNftParams {
   contractAddress: string;
   quantity: number;
@@ -358,11 +367,47 @@ export interface MintNftParams {
   privateKey: `0x${string}`;
   recipientAddress: string;
   chainSlug?: MintChainSlug;
+  // Gas settings
+  gasPreset?: GasPreset;
+  maxFeePerGasGwei?: number;       // only used when gasPreset === "custom"
+  maxPriorityFeePerGasGwei?: number;
+  // Sniper mode: keep retrying mint until success or timeout
+  sniperMode?: boolean;
+  sniperTimeoutMs?: number;        // default 60_000 ms
 }
 
 export interface MintNftResult {
   txHash: string;
   gasUsed?: string;
+}
+
+// ─── Gas override helper ──────────────────────────────────────────────────────
+async function resolveGasOverrides(
+  publicClient: ReturnType<typeof getPublicClientForChain>,
+  gasPreset: GasPreset,
+  maxFeePerGasGwei?: number,
+  maxPriorityFeePerGasGwei?: number,
+): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | undefined> {
+  if (gasPreset === "custom" && maxFeePerGasGwei && maxPriorityFeePerGasGwei) {
+    return {
+      maxFeePerGas: parseGwei(String(maxFeePerGasGwei)),
+      maxPriorityFeePerGas: parseGwei(String(maxPriorityFeePerGasGwei)),
+    };
+  }
+  if (gasPreset === "low") return undefined; // let viem auto-handle
+
+  try {
+    const feeData = await publicClient.estimateFeesPerGas();
+    const multiplier = GAS_MULTIPLIERS[gasPreset];
+    const baseFee = feeData.maxFeePerGas ?? 0n;
+    const priority = feeData.maxPriorityFeePerGas ?? parseGwei("1");
+    return {
+      maxFeePerGas: BigInt(Math.ceil(Number(baseFee) * multiplier)),
+      maxPriorityFeePerGas: BigInt(Math.ceil(Number(priority) * multiplier)),
+    };
+  } catch {
+    return undefined; // chain may not support EIP-1559 — fall through to legacy
+  }
 }
 
 export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
@@ -375,53 +420,85 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
     : getWalletClientForChain(params.privateKey, slug);
   const addr = params.contractAddress as `0x${string}`;
   const totalValue = params.mintPriceWei * BigInt(params.quantity);
+  const preset = params.gasPreset ?? "medium";
 
-  const mintAttempts: Array<() => Promise<`0x${string}`>> = [
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "mint",
-      args: [BigInt(params.quantity)], value: totalValue,
-    }),
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "publicMint",
-      args: [BigInt(params.quantity)], value: totalValue,
-    }),
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "mintPublic",
-      args: [BigInt(params.quantity)], value: totalValue,
-    }),
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "mint",
-      args: [account.address, BigInt(params.quantity)], value: totalValue,
-    }),
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "safeMint",
-      args: [account.address], value: totalValue,
-    }),
-    () => walletClient.writeContract({
-      address: addr, abi: MINT_ABI, functionName: "mintTo",
-      args: [account.address, BigInt(params.quantity)], value: totalValue,
-    }),
-  ];
-
-  let lastError: unknown;
-  for (const attempt of mintAttempts) {
-    try {
-      const txHash = await attempt();
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-      return { txHash, gasUsed: receipt.gasUsed.toString() };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Stop immediately on fatal errors
-      if (classifyMintError(msg) === "fatal") {
-        throw new Error(msg);
-      }
-      lastError = err;
-    }
-  }
-
-  throw new Error(
-    `All mint signatures failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+  // Resolve gas overrides once (EIP-1559 buffer or custom)
+  const gasOverrides = await resolveGasOverrides(
+    publicClient,
+    preset,
+    params.maxFeePerGasGwei,
+    params.maxPriorityFeePerGasGwei,
   );
+
+  // Sniper loop — retry until timeout or success
+  const sniperTimeout = params.sniperMode ? (params.sniperTimeoutMs ?? 60_000) : 0;
+  const deadline = Date.now() + sniperTimeout;
+  let attempt = 0;
+
+  do {
+    attempt++;
+    if (attempt > 1) {
+      // Brief pause between sniper retries to avoid hammering RPC
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
+    const mintAttempts: Array<() => Promise<`0x${string}`>> = [
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "mint",
+        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
+      }),
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "publicMint",
+        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
+      }),
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "mintPublic",
+        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
+      }),
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "mint",
+        args: [account.address, BigInt(params.quantity)], value: totalValue, ...gasOverrides,
+      }),
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "safeMint",
+        args: [account.address], value: totalValue, ...gasOverrides,
+      }),
+      () => walletClient.writeContract({
+        address: addr, abi: MINT_ABI, functionName: "mintTo",
+        args: [account.address, BigInt(params.quantity)], value: totalValue, ...gasOverrides,
+      }),
+    ];
+
+    let lastError: unknown;
+    for (const fn of mintAttempts) {
+      try {
+        const txHash = await fn();
+        // Wait for receipt with explicit timeout (30s) and single confirmation
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: txHash,
+          confirmations: 1,
+          timeout: 30_000,
+        });
+        return { txHash, gasUsed: receipt.gasUsed.toString() };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (classifyMintError(msg) === "fatal") throw new Error(msg);
+        lastError = err;
+      }
+    }
+
+    // In sniper mode, loop back if not yet past deadline and last error was retryable
+    const retryable = lastError
+      ? classifyMintError(lastError instanceof Error ? lastError.message : String(lastError)) !== "fatal"
+      : false;
+
+    if (!params.sniperMode || !retryable || Date.now() >= deadline) {
+      throw new Error(
+        `All mint signatures failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+      );
+    }
+    // eslint-disable-next-line no-constant-condition
+  } while (true);
 }
 
 // ─── Format helpers ───────────────────────────────────────────────────────────

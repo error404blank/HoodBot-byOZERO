@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, http, defineChain } from "viem";
+import { createPublicClient, createWalletClient, http, fallback, defineChain } from "viem";
 import { mainnet, base, sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -22,9 +22,12 @@ export const SUPPORTED_MINT_CHAINS = [
     name: "Ethereum",
     symbol: "ETH",
     slug: "ethereum",
+    // eth.llamarpc.com is free and highly reliable
     defaultRpc: "https://eth.llamarpc.com",
+    fallbackRpcs: ["https://cloudflare-eth.com", "https://rpc.ankr.com/eth"],
     explorer: "https://etherscan.io",
     viemChain: mainnet,
+    isTestnet: false,
   },
   {
     id: 4663,
@@ -32,8 +35,10 @@ export const SUPPORTED_MINT_CHAINS = [
     symbol: "ETH",
     slug: "robinhood",
     defaultRpc: process.env.RPC_URL || "https://rpc.mainnet.chain.robinhood.com",
+    fallbackRpcs: ["https://rpc.mainnet.chain.robinhood.com"],
     explorer: "https://robinhoodchain.blockscout.com",
     viemChain: robinhoodChain,
+    isTestnet: false,
   },
   {
     id: 8453,
@@ -41,17 +46,25 @@ export const SUPPORTED_MINT_CHAINS = [
     symbol: "ETH",
     slug: "base",
     defaultRpc: "https://mainnet.base.org",
+    fallbackRpcs: ["https://base.llamarpc.com", "https://rpc.ankr.com/base"],
     explorer: "https://basescan.org",
     viemChain: base,
+    isTestnet: false,
   },
   {
     id: 11155111,
-    name: "Sepolia (Testnet)",
+    name: "Sepolia",
     symbol: "ETH",
     slug: "sepolia",
-    defaultRpc: "https://rpc.sepolia.org",
+    // rpc.sepolia.org is unreliable (404 frequently) — use Ankr public endpoint
+    defaultRpc: "https://rpc.ankr.com/eth_sepolia",
+    fallbackRpcs: [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://sepolia.drpc.org",
+    ],
     explorer: "https://sepolia.etherscan.io",
     viemChain: sepolia,
+    isTestnet: true,
   },
 ] as const;
 
@@ -98,10 +111,14 @@ export function getWalletClient(privateKey: `0x${string}`, rpcUrl?: string) {
 // ─── Multi-chain client factory (for NFTHood minting) ────────────────────────
 export function getPublicClientForChain(slug: MintChainSlug, customRpcUrl?: string) {
   const chain = getMintChain(slug);
-  return createPublicClient({
-    chain: chain.viemChain,
-    transport: http(customRpcUrl || chain.defaultRpc),
-  });
+  // Build transport: custom RPC (if provided) → primary → fallbacks
+  const urls = customRpcUrl
+    ? [customRpcUrl]
+    : [chain.defaultRpc, ...chain.fallbackRpcs];
+  const transport = urls.length > 1
+    ? fallback(urls.map((u) => http(u, { timeout: 10_000 })))
+    : http(urls[0], { timeout: 10_000 });
+  return createPublicClient({ chain: chain.viemChain, transport });
 }
 
 export function getWalletClientForChain(
@@ -110,13 +127,15 @@ export function getWalletClientForChain(
   customRpcUrl?: string
 ) {
   const chain = getMintChain(slug);
+  const urls = customRpcUrl
+    ? [customRpcUrl]
+    : [chain.defaultRpc, ...chain.fallbackRpcs];
+  const transport = urls.length > 1
+    ? fallback(urls.map((u) => http(u, { timeout: 10_000 })))
+    : http(urls[0], { timeout: 10_000 });
   const account = privateKeyToAccount(privateKey);
   return {
-    client: createWalletClient({
-      account,
-      chain: chain.viemChain,
-      transport: http(customRpcUrl || chain.defaultRpc),
-    }),
+    client: createWalletClient({ account, chain: chain.viemChain, transport }),
     account,
   };
 }

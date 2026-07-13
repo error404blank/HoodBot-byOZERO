@@ -32,6 +32,11 @@ export function NftHoodTab() {
   const [quantity, setQuantity] = useState(1);
   const [pin, setPin] = useState("");
   const [dryRun, setDryRun] = useState(true);
+  const [gasPreset, setGasPreset] = useState<"low" | "medium" | "high" | "custom">("medium");
+  const [customMaxFee, setCustomMaxFee] = useState("");
+  const [customPriorityFee, setCustomPriorityFee] = useState("");
+  const [sniperMode, setSniperMode] = useState(false);
+  const [sniperTimeout, setSniperTimeout] = useState(60);
   const { tr } = useLang();
 
   const [status, setStatus] = useState<MintStatus>("idle");
@@ -72,7 +77,16 @@ export function NftHoodTab() {
     const res = await fetch("/api/v1/mint", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletId: Number(walletId), chain, contract, quantity, pin, dryRun }),
+      body: JSON.stringify({
+        walletId: Number(walletId), chain, contract, quantity, pin, dryRun,
+        gasPreset,
+        ...(gasPreset === "custom" && customMaxFee ? {
+          maxFeePerGasGwei: Number(customMaxFee),
+          maxPriorityFeePerGasGwei: Number(customPriorityFee || "1"),
+        } : {}),
+        sniperMode: !dryRun && sniperMode,
+        sniperTimeoutMs: sniperTimeout * 1000,
+      }),
     });
     const data = await res.json() as {
       txHash?: string;
@@ -193,6 +207,82 @@ export function NftHoodTab() {
           </div>
         </div>
 
+        {/* Gas preset */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-mono text-muted-foreground uppercase tracking-widest">Gas Speed</label>
+          <div className="grid grid-cols-4 gap-1.5">
+            {(["low", "medium", "high", "custom"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setGasPreset(p)}
+                className={`py-1.5 rounded border text-[11px] font-mono transition-colors ${
+                  gasPreset === p
+                    ? p === "high"
+                      ? "border-orange-400/60 bg-orange-400/10 text-orange-400"
+                      : "border-primary/50 bg-primary/15 text-primary"
+                    : "border-border text-muted-foreground hover:border-primary/30"
+                }`}
+              >
+                {p === "low" ? "Low" : p === "medium" ? "Med" : p === "high" ? "High" : "Custom"}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] font-mono text-muted-foreground/60">
+            {gasPreset === "low" && "Exact estimate — may fail on congested chains."}
+            {gasPreset === "medium" && "+20% buffer — recommended for most chains."}
+            {gasPreset === "high" && "+50% buffer — fast confirmation."}
+            {gasPreset === "custom" && "Set exact Max Fee and Priority Fee below."}
+          </p>
+          {gasPreset === "custom" && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono text-muted-foreground">Max Fee (Gwei)</label>
+                <input
+                  type="number" min="0" step="0.01" placeholder="e.g. 20"
+                  value={customMaxFee} onChange={(e) => setCustomMaxFee(e.target.value)}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono text-muted-foreground">Priority Fee (Gwei)</label>
+                <input
+                  type="number" min="0" step="0.01" placeholder="e.g. 1.5"
+                  value={customPriorityFee} onChange={(e) => setCustomPriorityFee(e.target.value)}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sniper Mode — only for live mint */}
+        {!dryRun && (
+          <div className="rounded border border-yellow-500/20 bg-yellow-500/5 p-3 space-y-3">
+            <label className="flex items-center gap-3 cursor-pointer select-none">
+              <div
+                onClick={() => setSniperMode(!sniperMode)}
+                className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer shrink-0 ${sniperMode ? "bg-yellow-400/70" : "bg-muted"}`}
+              >
+                <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${sniperMode ? "translate-x-4" : "translate-x-0.5"}`} />
+              </div>
+              <div>
+                <p className="text-xs font-mono text-foreground font-semibold">Sniper Mode</p>
+                <p className="text-[10px] font-mono text-muted-foreground">Keep retrying mint until success or timeout</p>
+              </div>
+            </label>
+            {sniperMode && (
+              <div className="space-y-1">
+                <label className="text-[10px] font-mono text-muted-foreground">Timeout (seconds)</label>
+                <input
+                  type="number" min="10" max="300" step="5"
+                  value={sniperTimeout} onChange={(e) => setSniperTimeout(Number(e.target.value))}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
         {/* PIN — only for live mint */}
         {!dryRun && (
           <div className="space-y-1.5">
@@ -294,7 +384,7 @@ export function NftHoodTab() {
                 </div>
                 {m.txHash && (
                   <a
-                    href={`https://robinhoodchain.blockscout.com/tx/${m.txHash}`}
+                    href={`${selectedChain.explorer}/tx/${m.txHash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-xs font-mono text-primary hover:underline shrink-0"

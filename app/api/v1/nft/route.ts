@@ -112,6 +112,9 @@ export async function POST(req: NextRequest) {
     const walletId = Number(body.walletId);
     const pin = body.pin as string;
     const quantity = Number(body.quantity ?? 1);
+    const gasPreset = (body.gasPreset as "low" | "medium" | "high" | "custom") ?? "medium";
+    const sniperMode = Boolean(body.sniperMode);
+    const sniperTimeoutMs = Number(body.sniperTimeoutMs ?? 60_000);
 
     if (!walletId || !pin) {
       return NextResponse.json(
@@ -157,6 +160,11 @@ export async function POST(req: NextRequest) {
         mintPriceWei: info.mintPriceWei,
         recipientAddress: wallet.address,
         chainSlug,
+        gasPreset,
+        maxFeePerGasGwei: body.maxFeePerGasGwei as number | undefined,
+        maxPriorityFeePerGasGwei: body.maxPriorityFeePerGasGwei as number | undefined,
+        sniperMode,
+        sniperTimeoutMs,
       });
 
       // Get chain explorer URL
