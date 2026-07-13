@@ -19,6 +19,7 @@ interface MintHistory {
 }
 
 type MintStatus = "idle" | "detecting" | "simulating" | "minting" | "success" | "error";
+const BUSY_STATUSES: MintStatus[] = ["detecting", "simulating", "minting"];
 
 export function NftHoodTab() {
   const [wallets, setWallets] = useState<WalletRow[]>([]);
@@ -30,7 +31,6 @@ export function NftHoodTab() {
   const [walletId, setWalletId] = useState("");
   const [contract, setContract] = useState("");
   const [quantity, setQuantity] = useState(1);
-  const [pin, setPin] = useState("");
   const [dryRun, setDryRun] = useState(true);
   const [gasPreset, setGasPreset] = useState<"low" | "medium" | "high" | "custom">("medium");
   const [customMaxFee, setCustomMaxFee] = useState("");
@@ -69,22 +69,68 @@ export function NftHoodTab() {
 
   async function handleMint() {
     if (!walletId || !contract) return;
-    if (!dryRun && !pin) return;
 
-    setStatus(dryRun ? "simulating" : "minting");
+    const selectedWalletObj = wallets.find((w) => String(w.id) === walletId);
+    const walletAddress = selectedWalletObj?.address ?? "";
+
+    if (dryRun) {
+      // Step 1 of dry-run: detect contract info
+      setStatus("detecting");
+      setResult(null);
+      const detectRes = await fetch("/api/v1/nft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "detect", contractAddress: contract, chainSlug: chain }),
+      });
+      const detectData = await detectRes.json() as { name?: string; mintPrice?: string; phase?: string; error?: string };
+      if (detectData.error) {
+        setStatus("error");
+        setResult({ error: detectData.error });
+        return;
+      }
+
+      // Step 2: simulate (gas estimate)
+      setStatus("simulating");
+      const simRes = await fetch("/api/v1/nft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "simulate",
+          contractAddress: contract,
+          chainSlug: chain,
+          quantity,
+          walletAddress,
+        }),
+      });
+      const simData = await simRes.json() as { success?: boolean; gasEstimate?: string; errorMessage?: string };
+      if (simData.success === false) {
+        setStatus("error");
+        setResult({ error: simData.errorMessage ?? "Simulation failed" });
+      } else {
+        setStatus("success");
+        setResult({ gasEstimate: simData.gasEstimate, contractName: detectData.name });
+      }
+      return;
+    }
+
+    // Live mint
+    setStatus("minting");
     setResult(null);
-
-    const res = await fetch("/api/v1/mint", {
+    const res = await fetch("/api/v1/nft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        walletId: Number(walletId), chain, contract, quantity, pin, dryRun,
+        action: "mint",
+        contractAddress: contract,
+        chainSlug: chain,
+        walletId: Number(walletId),
+        quantity,
         gasPreset,
         ...(gasPreset === "custom" && customMaxFee ? {
           maxFeePerGasGwei: Number(customMaxFee),
           maxPriorityFeePerGasGwei: Number(customPriorityFee || "1"),
         } : {}),
-        sniperMode: !dryRun && sniperMode,
+        sniperMode: sniperMode,
         sniperTimeoutMs: sniperTimeout * 1000,
       }),
     });
@@ -283,23 +329,6 @@ export function NftHoodTab() {
           </div>
         )}
 
-        {/* PIN — only for live mint */}
-        {!dryRun && (
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono text-muted-foreground">
-              PIN Wallet <span className="text-destructive">*</span>
-            </label>
-            <input
-              type="password"
-              placeholder="6 digit PIN"
-              maxLength={6}
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              className="w-full bg-background border border-border rounded px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50"
-            />
-          </div>
-        )}
-
         {/* Dry run toggle */}
         <label className="flex items-center gap-3 cursor-pointer select-none">
           <div
@@ -314,12 +343,13 @@ export function NftHoodTab() {
         {/* Submit */}
         <button
           onClick={handleMint}
-          disabled={status === "simulating" || status === "minting" || !walletId || !contract || (!dryRun && !pin)}
+          disabled={BUSY_STATUSES.includes(status) || !walletId || !contract}
           className="w-full py-3 rounded bg-primary text-primary-foreground text-sm font-mono font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "simulating" ? "Simulating..." :
+          {status === "detecting" ? "Detecting contract..." :
+           status === "simulating" ? "Simulating..." :
            status === "minting" ? "Minting..." :
-           dryRun ? `Simulate Mint on ${selectedChain.name}` : `Mint on ${selectedChain.name}`}
+           dryRun ? `Simulate on ${selectedChain.name}` : `Mint on ${selectedChain.name}`}
         </button>
 
         {/* Result */}
@@ -346,7 +376,7 @@ export function NftHoodTab() {
                   </a>
                 )}
                 {dryRun && !result.txHash && (
-                  <p className="text-xs font-mono text-primary">Simulasi berhasil. Matikan Dry Run untuk mint sungguhan.</p>
+                  <p className="text-xs font-mono text-primary">Simulation successful. Disable Dry Run to execute real mint.</p>
                 )}
               </>
             )}

@@ -3,7 +3,7 @@ import { requireApiKey } from "@/lib/apiAuth";
 import { db } from "@/src/db";
 import { nftMints, wallets, users } from "@/src/db/schema";
 import { eq } from "drizzle-orm";
-import { decryptPrivateKey } from "@/src/services/wallet";
+import { decryptPrivateKeyAuto } from "@/src/services/wallet";
 import {
   detectNftContract,
   mintNft,
@@ -110,45 +110,51 @@ export async function POST(req: NextRequest) {
   // ── mint ─────────────────────────────────────────────────────────────────────
   if (action === "mint") {
     const walletId = Number(body.walletId);
-    const pin = body.pin as string;
     const quantity = Number(body.quantity ?? 1);
     const gasPreset = (body.gasPreset as "low" | "medium" | "high" | "custom") ?? "medium";
     const sniperMode = Boolean(body.sniperMode);
     const sniperTimeoutMs = Number(body.sniperTimeoutMs ?? 60_000);
 
-    if (!walletId || !pin) {
-      return NextResponse.json(
-        { error: "walletId and pin are required for mint" },
-        { status: 400 }
-      );
+    if (!walletId) {
+      return NextResponse.json({ error: "walletId is required for mint" }, { status: 400 });
     }
 
-    // Look up wallet directly by ID — no telegramId needed from web dashboard
+    // Require session auth for web-initiated mints
+    const sessionUser = await getSessionUser(req);
+
     const wallet = await db.query.wallets.findFirst({
       where: eq(wallets.id, walletId),
     });
     if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
 
-    // Look up user to get telegramId for decryption
+    // Ensure session user owns this wallet (when called from web dashboard)
+    if (sessionUser && wallet.userId !== sessionUser.id) {
+      return NextResponse.json({ error: "Wallet does not belong to your account" }, { status: 403 });
+    }
+
+    // Look up user for telegramId (used as fallback for legacy PIN-encrypted wallets)
     const user = await db.query.users.findFirst({
       where: eq(users.id, wallet.userId),
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const telegramId = user.telegramId.toString();
-
     let privateKey: `0x${string}`;
     try {
-      const raw = await decryptPrivateKey(
+      const raw = await decryptPrivateKeyAuto(
         wallet.encryptedPrivateKey,
         wallet.encryptedIv,
         wallet.salt,
-        pin,
-        telegramId
+        // legacy wallets: pass telegramId as both pin and telegramId for backward compat
+        // bot-encrypted wallets will rely on their existing encryption
+        undefined,
+        user.telegramId.toString()
       );
       privateKey = raw as `0x${string}`;
     } catch {
-      return NextResponse.json({ error: "Invalid PIN" }, { status: 403 });
+      return NextResponse.json(
+        { error: "Could not decrypt wallet. If this is an old bot wallet, please re-import it from the web dashboard." },
+        { status: 403 }
+      );
     }
 
     try {

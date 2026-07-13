@@ -4,7 +4,7 @@ import { parseEther, parseGwei, isAddress } from "viem";
 import { db } from "@/src/db";
 import { wallets, users } from "@/src/db/schema";
 import { getSessionUser } from "@/lib/session";
-import { decryptPrivateKey } from "@/src/services/wallet";
+import { decryptPrivateKeyAuto } from "@/src/services/wallet";
 import { getPublicClientForChain, getWalletClientForChain, type MintChainSlug } from "@/src/services/chain";
 
 export async function POST(req: NextRequest) {
@@ -16,14 +16,13 @@ export async function POST(req: NextRequest) {
     chain: string;
     toAddress: string;
     amount: string;
-    pin?: string;
     dryRun?: boolean;
     gasPreset?: "low" | "medium" | "high" | "custom";
     maxFeePerGasGwei?: number;
     maxPriorityFeePerGasGwei?: number;
   };
 
-  const { walletId, toAddress, amount, pin, dryRun = true, gasPreset = "medium" } = body;
+  const { walletId, toAddress, amount, dryRun = true, gasPreset = "medium" } = body;
   const chain = (body.chain ?? "robinhood") as MintChainSlug;
 
   if (!walletId || !toAddress || !amount) {
@@ -78,23 +77,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Live send — need PIN
-  if (!pin) {
-    return NextResponse.json({ error: "PIN required for live send" }, { status: 400 });
-  }
-
+  // Live send — decrypt using server-side key (no PIN required)
   let privateKey: `0x${string}`;
   try {
-    const raw = await decryptPrivateKey(
+    const raw = await decryptPrivateKeyAuto(
       wallet.encryptedPrivateKey,
       wallet.encryptedIv,
       wallet.salt,
-      pin,
+      undefined,
       owner.telegramId.toString()
     );
     privateKey = raw as `0x${string}`;
   } catch {
-    return NextResponse.json({ error: "Invalid PIN" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Could not decrypt wallet. Re-import it from the web dashboard." },
+      { status: 403 }
+    );
   }
 
   const { client, account } = getWalletClientForChain(privateKey, chain);

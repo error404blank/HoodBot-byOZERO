@@ -19,7 +19,6 @@ export function SendTab() {
   const [chain, setChain] = useState("robinhood");
   const [toAddress, setToAddress] = useState("");
   const [amount, setAmount] = useState("");
-  const [pin, setPin] = useState("");
   const [dryRun, setDryRun] = useState(true);
   const [status, setStatus] = useState<TxStatus>("idle");
   const [result, setResult] = useState<{ txHash?: string; error?: string; gasEstimate?: string } | null>(null);
@@ -40,7 +39,6 @@ export function SendTab() {
 
   async function handleSend() {
     if (!walletId || !toAddress || !amount) return;
-    if (!dryRun && !pin) return;
 
     setStatus(dryRun ? "simulating" : "sending");
     setResult(null);
@@ -48,7 +46,7 @@ export function SendTab() {
     const res = await fetch("/api/v1/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ walletId: Number(walletId), chain, toAddress, amount, pin, dryRun }),
+      body: JSON.stringify({ walletId: Number(walletId), chain, toAddress, amount, dryRun }),
     });
     const data = await res.json() as { txHash?: string; gasEstimate?: string; error?: string };
 
@@ -140,23 +138,6 @@ export function SendTab() {
         />
       </div>
 
-      {/* PIN — only required for live send */}
-      {!dryRun && (
-        <div className="space-y-1.5">
-          <label className="text-xs font-mono text-muted-foreground uppercase tracking-widest">
-            PIN Wallet <span className="text-destructive">*</span>
-          </label>
-          <input
-            type="password"
-            placeholder="6 digit PIN"
-            maxLength={6}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            className="w-full bg-card border border-border rounded px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50"
-          />
-        </div>
-      )}
-
       {/* Dry run toggle */}
       <label className="flex items-center gap-3 cursor-pointer select-none">
         <div
@@ -171,7 +152,7 @@ export function SendTab() {
       {/* Submit */}
       <button
         onClick={handleSend}
-        disabled={status === "simulating" || status === "sending" || !walletId || !toAddress || !amount || (!dryRun && !pin)}
+        disabled={status === "simulating" || status === "sending" || !walletId || !toAddress || !amount}
         className="w-full py-3 rounded bg-primary text-primary-foreground text-sm font-mono font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {status === "simulating" ? "Simulating..." :
@@ -203,7 +184,7 @@ export function SendTab() {
                 </div>
               )}
               {dryRun && !result.txHash && (
-                <p className="text-xs font-mono text-primary">Simulasi berhasil. Matikan Dry Run untuk kirim sungguhan.</p>
+                <p className="text-xs font-mono text-primary">Simulation successful. Disable Dry Run to send.</p>
               )}
             </>
           )}
