@@ -332,6 +332,19 @@ const PRICE_ABI = parseAbi([
   "function cost() view returns (uint256)",
   "function PRICE() view returns (uint256)",
   "function publicSalePrice() view returns (uint256)",
+  "function salePrice() view returns (uint256)",
+  "function pricePerToken() view returns (uint256)",
+  "function pricePerMint() view returns (uint256)",
+  "function getPrice() view returns (uint256)",
+  "function publicPrice() view returns (uint256)",
+  "function publicMintPrice() view returns (uint256)",
+  "function tokenPrice() view returns (uint256)",
+  "function TOKEN_PRICE() view returns (uint256)",
+  "function MINT_PRICE() view returns (uint256)",
+  "function mintCost() view returns (uint256)",
+  "function mintFee() view returns (uint256)",
+  "function fee() view returns (uint256)",
+  "function weiCostPerToken() view returns (uint256)",
 ]);
 
 // Phase detection ABIs — inspired by MINTER's phase enum logic
@@ -511,13 +524,46 @@ export async function detectNftContract(
     maxSupply = ms.toString();
   } catch {}
 
-  // Mint price
+  // Mint price — build probe list from:
+  // 1. Verified ABI (zero-arg view functions returning uint256 with price-like names)
+  // 2. Hardcoded PRICE_ABI fallback list
+  const priceKeywords = ["price", "cost", "fee", "mint", "sale", "token", "wei"];
+  const abiPriceFns: string[] = [];
+  if (abiResult.abi) {
+    for (const item of abiResult.abi as Array<{ type: string; name: string; inputs: unknown[]; outputs: Array<{ type: string }>; stateMutability: string }>) {
+      if (
+        item.type === "function" &&
+        (item.stateMutability === "view" || item.stateMutability === "pure") &&
+        item.inputs.length === 0 &&
+        item.outputs?.length === 1 &&
+        item.outputs[0].type === "uint256" &&
+        priceKeywords.some((kw) => item.name.toLowerCase().includes(kw))
+      ) {
+        if (!abiPriceFns.includes(item.name)) abiPriceFns.push(item.name);
+      }
+    }
+  }
+
+  // All known hardcoded probe names
+  const hardcodedPriceFns = [
+    "price", "mintPrice", "cost", "PRICE", "publicSalePrice",
+    "salePrice", "pricePerToken", "pricePerMint", "getPrice",
+    "publicPrice", "publicMintPrice", "tokenPrice", "TOKEN_PRICE",
+    "MINT_PRICE", "mintCost", "mintFee", "fee", "weiCostPerToken",
+  ];
+
+  // Deduplicated probe order: ABI-derived first (most accurate), then hardcoded
+  const allPriceFns = [...new Set([...abiPriceFns, ...hardcodedPriceFns])];
+
   let mintPriceWei = 0n;
-  const priceFns = ["price", "mintPrice", "cost", "PRICE", "publicSalePrice"] as const;
-  for (const fn of priceFns) {
+  for (const fn of allPriceFns) {
     try {
-      mintPriceWei = await publicClient.readContract({ address: addr, abi: PRICE_ABI, functionName: fn });
-      break;
+      const singleAbi = parseAbi([`function ${fn}() view returns (uint256)`]);
+      const result = await publicClient.readContract({ address: addr, abi: singleAbi, functionName: fn });
+      if (typeof result === "bigint" && result > 0n) {
+        mintPriceWei = result;
+        break;
+      }
     } catch {}
   }
 
