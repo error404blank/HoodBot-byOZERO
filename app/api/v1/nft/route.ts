@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { decryptPrivateKeyAuto } from "@/src/services/wallet";
 import {
   detectNftContract,
+  autoDetectChain,
   mintNft,
   simulateMint,
   checkAllowlist,
@@ -56,6 +57,22 @@ export async function POST(req: NextRequest) {
       { error: `Unsupported chain: ${chainSlug}. Supported: ${SUPPORTED_MINT_CHAINS.map((c) => c.slug).join(", ")}` },
       { status: 400 }
     );
+  }
+
+  // ── autodetect — find which chain the contract is on ────────────────────────
+  if (action === "autodetect") {
+    try {
+      const detectedChain = await autoDetectChain(contractAddress);
+      if (!detectedChain) {
+        return NextResponse.json({
+          error: "Contract not found on any supported chain. Check the address and make sure you are on the right network.",
+        }, { status: 404 });
+      }
+      const info = await detectNftContract(contractAddress, detectedChain);
+      return NextResponse.json({ ...info, mintPriceWei: info.mintPriceWei.toString(), detectedChain });
+    } catch (err) {
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
   }
 
   // ── detect ──────────────────────────────────────────────────────────────────
@@ -176,6 +193,7 @@ export async function POST(req: NextRequest) {
         mintPriceWei: info.mintPriceWei,
         recipientAddress: wallet.address,
         chainSlug,
+        detectedFn: body.detectedFn as string | undefined,
         gasPreset,
         maxFeePerGasGwei: body.maxFeePerGasGwei as number | undefined,
         maxPriorityFeePerGasGwei: body.maxPriorityFeePerGasGwei as number | undefined,

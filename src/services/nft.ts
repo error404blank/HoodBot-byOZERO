@@ -64,6 +64,7 @@ export type MintPhase = "unknown" | "paused" | "allowlist" | "public" | "soldout
 
 export interface NftContractInfo {
   address: string;
+  chainSlug: MintChainSlug;
   standard: NftStandard;
   name: string;
   symbol: string;
@@ -110,6 +111,30 @@ export function classifyMintError(msg: string): "fatal" | "retryable" {
   return "retryable";
 }
 
+// ─── Auto-detect which chain a contract is on ─────────────────────────────────
+// Checks all SUPPORTED_MINT_CHAINS in parallel — returns the slug of the first
+// chain where the address has bytecode.
+export async function autoDetectChain(contractAddress: string): Promise<MintChainSlug | null> {
+  const { SUPPORTED_MINT_CHAINS } = await import("./chain");
+  const addr = contractAddress as `0x${string}`;
+
+  const results = await Promise.allSettled(
+    SUPPORTED_MINT_CHAINS.map(async (c) => {
+      const client = c.slug === "robinhood"
+        ? getPublicClient()
+        : getPublicClientForChain(c.slug as MintChainSlug);
+      const code = await client.getCode({ address: addr });
+      if (code && code !== "0x") return c.slug as MintChainSlug;
+      throw new Error("no code");
+    })
+  );
+
+  for (const r of results) {
+    if (r.status === "fulfilled") return r.value;
+  }
+  return null;
+}
+
 // ─── Contract detection ───────────────────────────────────────────────────────
 export async function detectNftContract(
   contractAddress: string,
@@ -124,8 +149,9 @@ export async function detectNftContract(
   if (!code || code === "0x") {
     return {
       address: contractAddress,
+      chainSlug,
       standard: "UNKNOWN",
-      name: "Not a contract",
+      name: "Not a contract — check chain selection",
       symbol: "",
       totalSupply: "0",
       maxSupply: "0",
@@ -225,6 +251,7 @@ export async function detectNftContract(
 
   return {
     address: contractAddress,
+    chainSlug,
     standard,
     name: name || "Unknown Collection",
     symbol: symbol || "NFT",
@@ -387,6 +414,8 @@ export interface MintNftParams {
   privateKey: `0x${string}`;
   recipientAddress: string;
   chainSlug?: MintChainSlug;
+  // If provided (from prior simulate), use this signature directly — skip trial-and-error
+  detectedFn?: string; // e.g. "mint" | "publicMint" | "mintTo" etc.
   // Gas settings
   gasPreset?: GasPreset;
   maxFeePerGasGwei?: number;       // only used when gasPreset === "custom"
@@ -462,7 +491,10 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
-    const mintAttempts: Array<() => Promise<`0x${string}`>> = [
+    // If a specific function was detected by simulateMint, use it directly.
+    // Otherwise fall back to trying all known signatures.
+    type WriteFn = () => Promise<`0x${string}`>;
+    const ALL_MINT_ATTEMPTS: WriteFn[] = [
       () => walletClient.writeContract({
         address: addr, abi: MINT_ABI, functionName: "mint",
         args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
@@ -488,6 +520,25 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
         args: [account.address, BigInt(params.quantity)], value: totalValue, ...gasOverrides,
       }),
     ];
+
+    // Build the attempt list: if detectedFn is known, put that first (and only try it)
+    let mintAttempts: WriteFn[];
+    if (params.detectedFn) {
+      const fnName = params.detectedFn; // e.g. "mint", "publicMint", "mintTo"
+      const hasAddress = fnName.includes(account.address);
+      const fnBase = fnName.split("(")[0];
+      const matched = ALL_MINT_ATTEMPTS.filter((_, i) => {
+        // Map index to function names in same order as ALL_MINT_ATTEMPTS above
+        const names = ["mint","publicMint","mintPublic","mint_addr","safeMint","mintTo"];
+        const n = names[i];
+        if (fnBase === "mint" && hasAddress) return n === "mint_addr";
+        if (fnBase === "mint") return n === "mint";
+        return n === fnBase;
+      });
+      mintAttempts = matched.length > 0 ? [...matched, ...ALL_MINT_ATTEMPTS] : ALL_MINT_ATTEMPTS;
+    } else {
+      mintAttempts = ALL_MINT_ATTEMPTS;
+    }
 
     let lastError: unknown;
     for (const fn of mintAttempts) {

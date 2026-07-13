@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { SUPPORTED_MINT_CHAINS } from "@/src/services/chain";
 import { useLang } from "@/lib/useLang";
 
@@ -18,40 +18,62 @@ interface MintHistory {
   mintedAt: string;
 }
 
-type MintStatus = "idle" | "simulating" | "minting" | "success" | "error";
-const BUSY_STATUSES: MintStatus[] = ["simulating", "minting"];
+interface ContractCard {
+  name: string;
+  symbol: string;
+  standard: string;
+  totalSupply: string;
+  maxSupply: string;
+  mintPrice: string;
+  phase: string;
+  remaining: string;
+  detectedChain: string;
+  hasCode: boolean;
+}
+
+type DetectStatus = "idle" | "detecting" | "done" | "error";
+type MintStatus   = "idle" | "simulating" | "minting" | "success" | "error";
+const BUSY: MintStatus[] = ["simulating", "minting"];
+
+const PHASE_COLOR: Record<string, string> = {
+  public:    "text-primary",
+  paused:    "text-yellow-400",
+  soldout:   "text-destructive",
+  allowlist: "text-blue-400",
+  unknown:   "text-muted-foreground",
+};
 
 export function NftHoodTab() {
-  const [wallets, setWallets] = useState<WalletRow[]>([]);
-  const [history, setHistory] = useState<MintHistory[]>([]);
+  const [wallets, setWallets]           = useState<WalletRow[]>([]);
+  const [history, setHistory]           = useState<MintHistory[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
-
-  // Form
-  const [chain, setChain] = useState("robinhood");
-  const [walletId, setWalletId] = useState("");
-  const [contract, setContract] = useState("");
-  const [quantity, setQuantity] = useState(1);
-  const [dryRun, setDryRun] = useState(true);
-  const [gasPreset, setGasPreset] = useState<"low" | "medium" | "high" | "custom">("medium");
-  // PIN removed — wallets are decrypted server-side without PIN requirement
-  const [customMaxFee, setCustomMaxFee] = useState("");
-  const [customPriorityFee, setCustomPriorityFee] = useState("");
-  const [sniperMode, setSniperMode] = useState(false);
-  const [sniperTimeout, setSniperTimeout] = useState(60);
   const { tr } = useLang();
 
-  const [status, setStatus] = useState<MintStatus>("idle");
-  const [result, setResult] = useState<{
-    txHash?: string;
-    gasEstimate?: string;
-    gasWithBuffer?: string;
-    contractName?: string;
-    mintPrice?: string;
-    phase?: string;
-    detectedFn?: string;
-    error?: string;
+  // Contract info card
+  const [contract, setContract]         = useState("");
+  const [detectStatus, setDetectStatus] = useState<DetectStatus>("idle");
+  const [contractCard, setContractCard] = useState<ContractCard | null>(null);
+  const [detectError, setDetectError]   = useState("");
+
+  // Form
+  const [chain, setChain]               = useState("robinhood");
+  const [walletId, setWalletId]         = useState("");
+  const [quantity, setQuantity]         = useState(1);
+  const [dryRun, setDryRun]             = useState(true);
+  const [gasPreset, setGasPreset]       = useState<"low" | "medium" | "high" | "custom">("medium");
+  const [customMaxFee, setCustomMaxFee] = useState("");
+  const [customPriorityFee, setCustomPriorityFee] = useState("");
+  const [sniperMode, setSniperMode]     = useState(false);
+  const [sniperTimeout, setSniperTimeout] = useState(60);
+
+  // Mint result
+  const [mintStatus, setMintStatus] = useState<MintStatus>("idle");
+  const [mintResult, setMintResult] = useState<{
+    txHash?: string; gasEstimate?: string; gasWithBuffer?: string;
+    detectedFn?: string; error?: string;
   } | null>(null);
 
+  // Derived — the currently selected chain object
   const selectedChain = SUPPORTED_MINT_CHAINS.find((c) => c.slug === chain) ?? SUPPORTED_MINT_CHAINS[1];
 
   useEffect(() => {
@@ -64,66 +86,76 @@ export function NftHoodTab() {
       });
     fetch("/api/v1/nft-history")
       .then((r) => r.json())
-      .then((d) => {
-        const data = d as { mints: MintHistory[] };
-        setHistory(data.mints ?? []);
-        setLoadingHistory(false);
-      })
+      .then((d) => { setHistory((d as { mints: MintHistory[] }).mints ?? []); setLoadingHistory(false); })
       .catch(() => setLoadingHistory(false));
   }, []);
 
-  async function handleMint() {
-    if (!walletId || !contract) return;
-
-    const selectedWalletObj = wallets.find((w) => String(w.id) === walletId);
-    const walletAddress = selectedWalletObj?.address ?? "";
-
-    setResult(null);
-
-    if (dryRun) {
-      // Single request — server runs detect + simulate in parallel internally
-      setStatus("simulating");
+  // Auto-detect contract info whenever address looks valid
+  const autoDetect = useCallback(async (addr: string) => {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return;
+    setDetectStatus("detecting");
+    setContractCard(null);
+    setDetectError("");
+    try {
       const res = await fetch("/api/v1/nft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "simulate",
-          contractAddress: contract,
-          chainSlug: chain,
-          quantity,
-          walletAddress,
-        }),
+        body: JSON.stringify({ action: "autodetect", contractAddress: addr }),
+      });
+      const data = await res.json() as ContractCard & { error?: string; detectedChain?: string };
+      if (data.error) {
+        setDetectStatus("error");
+        setDetectError(data.error);
+      } else {
+        setDetectStatus("done");
+        setContractCard({ ...data, detectedChain: data.detectedChain ?? chain });
+        // Auto-select the chain the contract was found on
+        if (data.detectedChain) setChain(data.detectedChain);
+      }
+    } catch (e) {
+      setDetectStatus("error");
+      setDetectError(String(e));
+    }
+  }, [chain]);
+
+  function handleContractChange(val: string) {
+    setContract(val);
+    setContractCard(null);
+    setDetectStatus("idle");
+    setDetectError("");
+    setMintResult(null);
+    if (/^0x[0-9a-fA-F]{40}$/.test(val)) autoDetect(val);
+  }
+
+  async function handleMint() {
+    if (!walletId || !contract) return;
+    const selectedWalletObj = wallets.find((w) => String(w.id) === walletId);
+    const walletAddress = selectedWalletObj?.address ?? "";
+    setMintResult(null);
+
+    if (dryRun) {
+      setMintStatus("simulating");
+      const res = await fetch("/api/v1/nft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "simulate", contractAddress: contract, chainSlug: chain, quantity, walletAddress }),
       });
       const data = await res.json() as {
-        success?: boolean;
-        gasEstimate?: string;
-        gasWithBuffer?: string;
-        contractName?: string;
-        mintPrice?: string;
-        phase?: string;
-        detectedFn?: string;
-        errorMessage?: string;
-        error?: string;
+        success?: boolean; gasEstimate?: string; gasWithBuffer?: string;
+        detectedFn?: string; errorMessage?: string; error?: string;
       };
       if (data.success === false || data.error) {
-        setStatus("error");
-        setResult({ error: data.errorMessage ?? data.error ?? "Simulation failed" });
+        setMintStatus("error");
+        setMintResult({ error: data.errorMessage ?? data.error ?? "Simulation failed" });
       } else {
-        setStatus("success");
-        setResult({
-          gasEstimate: data.gasEstimate,
-          gasWithBuffer: data.gasWithBuffer,
-          contractName: data.contractName,
-          mintPrice: data.mintPrice,
-          phase: data.phase,
-          detectedFn: data.detectedFn,
-        });
+        setMintStatus("success");
+        setMintResult({ gasEstimate: data.gasEstimate, gasWithBuffer: data.gasWithBuffer, detectedFn: data.detectedFn });
       }
       return;
     }
 
-    // Live mint — no PIN required, session auth handles authorization
-    setStatus("minting");
+    // Live mint — pass detectedFn from simulate if we have it
+    setMintStatus("minting");
     const res = await fetch("/api/v1/nft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -134,6 +166,7 @@ export function NftHoodTab() {
         walletId: Number(walletId),
         quantity,
         gasPreset,
+        detectedFn: mintResult?.detectedFn,
         ...(gasPreset === "custom" && customMaxFee ? {
           maxFeePerGasGwei: Number(customMaxFee),
           maxPriorityFeePerGasGwei: Number(customPriorityFee || "1"),
@@ -142,29 +175,102 @@ export function NftHoodTab() {
         sniperTimeoutMs: sniperTimeout * 1000,
       }),
     });
-    const data = await res.json() as {
-      txHash?: string;
-      gasUsed?: string;
-      contractName?: string;
-      error?: string;
-    };
-
-    if (data.error) {
-      setStatus("error");
-    } else {
-      setStatus("success");
-      fetch("/api/v1/nft-history")
-        .then((r) => r.json())
-        .then((d) => { const x = d as { mints: MintHistory[] }; setHistory(x.mints ?? []); });
+    const data = await res.json() as { txHash?: string; gasUsed?: string; error?: string };
+    if (data.error) { setMintStatus("error"); } else {
+      setMintStatus("success");
+      fetch("/api/v1/nft-history").then((r) => r.json())
+        .then((d) => setHistory((d as { mints: MintHistory[] }).mints ?? []));
     }
-    setResult(data);
+    setMintResult(data);
   }
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-2xl">
       <div>
         <h2 className="text-base font-mono font-bold text-foreground">NFTHood</h2>
-        <p className="text-xs font-mono text-muted-foreground mt-0.5">Mint NFT on Ethereum, Robinhood Chain, Base, or Sepolia (testnet).</p>
+        <p className="text-xs font-mono text-muted-foreground mt-0.5">
+          Mint NFT on Ethereum, Robinhood Chain, Base, or Sepolia (testnet).
+        </p>
+      </div>
+
+      {/* Contract address input + auto-detect card */}
+      <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+        <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Contract</p>
+        <div className="space-y-1.5">
+          <label className="text-xs font-mono text-muted-foreground">
+            {tr.contractAddress} <span className="text-destructive">*</span>
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="0x... (paste to auto-detect)"
+              value={contract}
+              onChange={(e) => handleContractChange(e.target.value.trim())}
+              className="w-full bg-background border border-border rounded px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 pr-10"
+            />
+            {detectStatus === "detecting" && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono text-muted-foreground animate-pulse">
+                scanning...
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Contract info card */}
+        {detectStatus === "error" && (
+          <div className="rounded border border-destructive/30 bg-destructive/5 px-3 py-2">
+            <p className="text-xs font-mono text-destructive">{detectError}</p>
+          </div>
+        )}
+
+        {detectStatus === "done" && contractCard && (
+          <div className={`rounded border px-3 py-3 space-y-1.5 ${contractCard.hasCode ? "border-primary/20 bg-primary/5" : "border-yellow-500/30 bg-yellow-500/5"}`}>
+            {/* Header row */}
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-mono font-bold text-foreground truncate">
+                {contractCard.name} <span className="text-muted-foreground font-normal">({contractCard.symbol})</span>
+              </p>
+              <span className="text-[10px] font-mono border border-border rounded px-1.5 py-0.5 text-muted-foreground shrink-0">
+                {contractCard.standard}
+              </span>
+            </div>
+
+            {/* Info grid */}
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1">
+              <div>
+                <p className="text-[10px] font-mono text-muted-foreground/60 uppercase">Chain</p>
+                <p className="text-xs font-mono text-foreground capitalize">{contractCard.detectedChain}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-mono text-muted-foreground/60 uppercase">Phase</p>
+                <p className={`text-xs font-mono font-semibold capitalize ${PHASE_COLOR[contractCard.phase] ?? "text-foreground"}`}>
+                  {contractCard.phase}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-mono text-muted-foreground/60 uppercase">Mint Price</p>
+                <p className="text-xs font-mono text-foreground">
+                  {parseFloat(contractCard.mintPrice) === 0 ? "Free" : `${contractCard.mintPrice} ETH`}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] font-mono text-muted-foreground/60 uppercase">Supply</p>
+                <p className="text-xs font-mono text-foreground">
+                  {contractCard.totalSupply}{contractCard.maxSupply !== "0" ? ` / ${contractCard.maxSupply}` : ""}
+                  {contractCard.remaining !== "unknown" && contractCard.maxSupply !== "0" && (
+                    <span className="text-muted-foreground/60"> ({contractCard.remaining} left)</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {!contractCard.hasCode && (
+              <p className="text-[11px] font-mono text-yellow-400 pt-1">
+                No bytecode found on the selected chain. Try a different network.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Mint form */}
@@ -177,27 +283,24 @@ export function NftHoodTab() {
             {tr.network} <span className="text-destructive">*</span>
           </label>
           <div className="grid grid-cols-2 gap-2">
-            {SUPPORTED_MINT_CHAINS.map((c) => {
-              const isTestnet = c.slug === "sepolia";
-              return (
-                <button
-                  key={c.slug}
-                  onClick={() => setChain(c.slug)}
-                  className={`py-2 px-2 rounded border text-xs font-mono transition-colors text-center relative ${
-                    chain === c.slug
-                      ? "border-primary/50 bg-primary/15 text-primary"
-                      : "border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
-                  }`}
-                >
-                  <span>{c.name}</span>
-                  {isTestnet && (
-                    <span className="ml-1.5 text-[9px] font-mono border border-yellow-500/40 text-yellow-400 bg-yellow-500/10 rounded px-1 py-0.5 align-middle">
-                      TEST
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {SUPPORTED_MINT_CHAINS.map((c) => (
+              <button
+                key={c.slug}
+                onClick={() => setChain(c.slug)}
+                className={`py-2 px-2 rounded border text-xs font-mono transition-colors text-center ${
+                  chain === c.slug
+                    ? "border-primary/50 bg-primary/15 text-primary"
+                    : "border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
+                }`}
+              >
+                {c.name}
+                {c.isTestnet && (
+                  <span className="ml-1.5 text-[9px] font-mono border border-yellow-500/40 text-yellow-400 bg-yellow-500/10 rounded px-1 py-0.5 align-middle">
+                    TEST
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -219,20 +322,6 @@ export function NftHoodTab() {
           </select>
         </div>
 
-        {/* Contract */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-mono text-muted-foreground">
-            {tr.contractAddress} <span className="text-destructive">*</span>
-          </label>
-          <input
-            type="text"
-            placeholder="0x..."
-            value={contract}
-            onChange={(e) => setContract(e.target.value)}
-            className="w-full bg-background border border-border rounded px-3 py-2.5 text-sm font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50"
-          />
-        </div>
-
         {/* Quantity */}
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-muted-foreground">{tr.quantity}</label>
@@ -240,23 +329,16 @@ export function NftHoodTab() {
             <button
               onClick={() => setQuantity(Math.max(1, quantity - 1))}
               className="w-8 h-9 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/30 font-mono text-lg transition-colors"
-            >
-              -
-            </button>
+            >-</button>
             <input
-              type="number"
-              min={1}
-              max={20}
-              value={quantity}
+              type="number" min={1} max={20} value={quantity}
               onChange={(e) => setQuantity(Math.max(1, Math.min(20, Number(e.target.value))))}
               className="flex-1 bg-background border border-border rounded px-3 py-2 text-sm font-mono text-foreground text-center focus:outline-none focus:border-primary/50"
             />
             <button
               onClick={() => setQuantity(Math.min(20, quantity + 1))}
               className="w-8 h-9 rounded border border-border text-muted-foreground hover:text-foreground hover:border-primary/30 font-mono text-lg transition-colors"
-            >
-              +
-            </button>
+            >+</button>
           </div>
         </div>
 
@@ -264,15 +346,14 @@ export function NftHoodTab() {
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-muted-foreground uppercase tracking-widest">Gas Speed</label>
           <div className="grid grid-cols-4 gap-1.5">
-            {(["low", "medium", "high", "custom"] as const).map((p) => (
+            {(["low","medium","high","custom"] as const).map((p) => (
               <button
                 key={p}
                 onClick={() => setGasPreset(p)}
                 className={`py-1.5 rounded border text-[11px] font-mono transition-colors ${
                   gasPreset === p
-                    ? p === "high"
-                      ? "border-orange-400/60 bg-orange-400/10 text-orange-400"
-                      : "border-primary/50 bg-primary/15 text-primary"
+                    ? p === "high" ? "border-orange-400/60 bg-orange-400/10 text-orange-400"
+                                   : "border-primary/50 bg-primary/15 text-primary"
                     : "border-border text-muted-foreground hover:border-primary/30"
                 }`}
               >
@@ -281,56 +362,48 @@ export function NftHoodTab() {
             ))}
           </div>
           <p className="text-[10px] font-mono text-muted-foreground/60">
-            {gasPreset === "low" && "Exact estimate — may fail on congested chains."}
-            {gasPreset === "medium" && "+20% buffer — recommended for most chains."}
-            {gasPreset === "high" && "+50% buffer — fast confirmation."}
+            {gasPreset === "low"    && "Exact estimate — may fail on busy chains."}
+            {gasPreset === "medium" && "+20% buffer — recommended."}
+            {gasPreset === "high"   && "+50% buffer — fast confirmation."}
             {gasPreset === "custom" && "Set exact Max Fee and Priority Fee below."}
           </p>
           {gasPreset === "custom" && (
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
                 <label className="text-[10px] font-mono text-muted-foreground">Max Fee (Gwei)</label>
-                <input
-                  type="number" min="0" step="0.01" placeholder="e.g. 20"
-                  value={customMaxFee} onChange={(e) => setCustomMaxFee(e.target.value)}
-                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
-                />
+                <input type="number" min="0" step="0.01" placeholder="e.g. 20" value={customMaxFee}
+                  onChange={(e) => setCustomMaxFee(e.target.value)}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50" />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-mono text-muted-foreground">Priority Fee (Gwei)</label>
-                <input
-                  type="number" min="0" step="0.01" placeholder="e.g. 1.5"
-                  value={customPriorityFee} onChange={(e) => setCustomPriorityFee(e.target.value)}
-                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
-                />
+                <input type="number" min="0" step="0.01" placeholder="e.g. 1.5" value={customPriorityFee}
+                  onChange={(e) => setCustomPriorityFee(e.target.value)}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50" />
               </div>
             </div>
           )}
         </div>
 
-        {/* Sniper Mode — only for live mint */}
+        {/* Sniper Mode — live mint only */}
         {!dryRun && (
           <div className="rounded border border-yellow-500/20 bg-yellow-500/5 p-3 space-y-3">
             <label className="flex items-center gap-3 cursor-pointer select-none">
-              <div
-                onClick={() => setSniperMode(!sniperMode)}
-                className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer shrink-0 ${sniperMode ? "bg-yellow-400/70" : "bg-muted"}`}
-              >
+              <div onClick={() => setSniperMode(!sniperMode)}
+                className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer shrink-0 ${sniperMode ? "bg-yellow-400/70" : "bg-muted"}`}>
                 <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${sniperMode ? "translate-x-4" : "translate-x-0.5"}`} />
               </div>
               <div>
                 <p className="text-xs font-mono text-foreground font-semibold">Sniper Mode</p>
-                <p className="text-[10px] font-mono text-muted-foreground">Keep retrying mint until success or timeout</p>
+                <p className="text-[10px] font-mono text-muted-foreground">Keep retrying until success or timeout</p>
               </div>
             </label>
             {sniperMode && (
               <div className="space-y-1">
                 <label className="text-[10px] font-mono text-muted-foreground">Timeout (seconds)</label>
-                <input
-                  type="number" min="10" max="300" step="5"
-                  value={sniperTimeout} onChange={(e) => setSniperTimeout(Number(e.target.value))}
-                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
-                />
+                <input type="number" min="10" max="300" step="5" value={sniperTimeout}
+                  onChange={(e) => setSniperTimeout(Number(e.target.value))}
+                  className="w-full bg-background border border-border rounded px-2.5 py-2 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50" />
               </div>
             )}
           </div>
@@ -338,67 +411,52 @@ export function NftHoodTab() {
 
         {/* Dry run toggle */}
         <label className="flex items-center gap-3 cursor-pointer select-none">
-          <div
-            onClick={() => setDryRun(!dryRun)}
-            className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer ${dryRun ? "bg-primary/60" : "bg-muted"}`}
-          >
+          <div onClick={() => setDryRun(!dryRun)}
+            className={`w-8 h-4 rounded-full transition-colors relative cursor-pointer ${dryRun ? "bg-primary/60" : "bg-muted"}`}>
             <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${dryRun ? "translate-x-0.5" : "translate-x-4"}`} />
           </div>
-          <span className="text-sm font-mono text-muted-foreground">Dry Run (simulasi saja)</span>
+          <span className="text-sm font-mono text-muted-foreground">Dry Run (simulate only)</span>
         </label>
 
         {/* Submit */}
         <button
           onClick={handleMint}
-          disabled={BUSY_STATUSES.includes(status) || !walletId || !contract}
+          disabled={BUSY.includes(mintStatus) || !walletId || !contract || detectStatus === "detecting"}
           className="w-full py-3 rounded bg-primary text-primary-foreground text-sm font-mono font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {status === "simulating" ? "Simulating..." :
-           status === "minting" ? "Minting..." :
+          {mintStatus === "simulating" ? "Simulating..." :
+           mintStatus === "minting"    ? "Minting..." :
            dryRun ? `Simulate on ${selectedChain.name}` : `Mint on ${selectedChain.name}`}
         </button>
 
-        {/* Result */}
-        {result && (
-          <div className={`rounded border px-4 py-3 space-y-1.5 ${result.error ? "border-destructive/40 bg-destructive/5" : "border-primary/30 bg-primary/5"}`}>
-            {result.error ? (
-              <p className="text-xs font-mono text-destructive break-words">{result.error}</p>
+        {/* Mint result */}
+        {mintResult && (
+          <div className={`rounded border px-4 py-3 space-y-1.5 ${mintResult.error ? "border-destructive/40 bg-destructive/5" : "border-primary/30 bg-primary/5"}`}>
+            {mintResult.error ? (
+              <p className="text-xs font-mono text-destructive break-words">{mintResult.error}</p>
             ) : (
               <>
-                {result.contractName && (
-                  <p className="text-xs font-mono text-foreground font-semibold">{result.contractName}</p>
-                )}
-                {result.mintPrice && (
+                {mintResult.gasEstimate && (
                   <p className="text-xs font-mono text-muted-foreground">
-                    Price: <span className="text-foreground">{parseFloat(result.mintPrice) === 0 ? "Free" : `${result.mintPrice} ETH`}</span>
+                    Gas: <span className="text-foreground">{mintResult.gasEstimate}</span>
+                    {mintResult.gasWithBuffer && (
+                      <span className="text-muted-foreground/60"> (+25% buffer: {mintResult.gasWithBuffer})</span>
+                    )}
                   </p>
                 )}
-                {result.phase && (
-                  <p className="text-xs font-mono text-muted-foreground">
-                    Phase: <span className={result.phase === "public" ? "text-primary" : "text-foreground"}>{result.phase}</span>
-                  </p>
+                {mintResult.detectedFn && (
+                  <p className="text-[10px] font-mono text-muted-foreground/60">Fn: {mintResult.detectedFn}</p>
                 )}
-                {result.gasEstimate && (
-                  <p className="text-xs font-mono text-muted-foreground">
-                    Gas: <span className="text-foreground">{result.gasEstimate}</span>
-                    {result.gasWithBuffer && <span className="text-muted-foreground/60"> (+25% buffer: {result.gasWithBuffer})</span>}
-                  </p>
-                )}
-                {result.detectedFn && (
-                  <p className="text-xs font-mono text-muted-foreground/60">Fn: {result.detectedFn}</p>
-                )}
-                {result.txHash && (
-                  <a
-                    href={`${selectedChain.explorer}/tx/${result.txHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs font-mono text-primary hover:underline block"
-                  >
-                    Tx: {result.txHash.slice(0, 14)}...{result.txHash.slice(-8)}
+                {mintResult.txHash && (
+                  <a href={`${selectedChain.explorer}/tx/${mintResult.txHash}`} target="_blank" rel="noopener noreferrer"
+                    className="text-xs font-mono text-primary hover:underline block">
+                    Tx: {mintResult.txHash.slice(0, 14)}...{mintResult.txHash.slice(-8)}
                   </a>
                 )}
-                {dryRun && !result.txHash && (
-                  <p className="text-[10px] font-mono text-primary/80 pt-1">Simulation OK. Disable Dry Run to execute real mint.</p>
+                {dryRun && !mintResult.txHash && (
+                  <p className="text-[10px] font-mono text-primary/80 pt-1">
+                    Simulation OK — disable Dry Run to execute real mint.
+                  </p>
                 )}
               </>
             )}
@@ -408,20 +466,17 @@ export function NftHoodTab() {
 
       {/* Mint history */}
       <div className="space-y-2">
-        <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground px-1">Riwayat Mint</p>
-
+        <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground px-1">Mint History</p>
         {loadingHistory && (
           <div className="space-y-2">
-            {[1, 2].map((i) => <div key={i} className="h-12 rounded-lg border border-border bg-card animate-pulse" />)}
+            {[1,2].map((i) => <div key={i} className="h-12 rounded-lg border border-border bg-card animate-pulse" />)}
           </div>
         )}
-
         {!loadingHistory && history.length === 0 && (
           <div className="rounded-lg border border-border/50 bg-card/50 px-4 py-5 text-center">
-            <p className="text-xs font-mono text-muted-foreground/60">Belum ada mint.</p>
+            <p className="text-xs font-mono text-muted-foreground/60">No mints yet.</p>
           </div>
         )}
-
         {!loadingHistory && history.length > 0 && (
           <div className="rounded-lg border border-border bg-card divide-y divide-border/50">
             {history.map((m) => (
@@ -431,18 +486,12 @@ export function NftHoodTab() {
                     {m.contractAddress.slice(0, 10)}...{m.contractAddress.slice(-6)}
                   </p>
                   <p className="text-[11px] font-mono text-muted-foreground/60 mt-0.5">
-                    qty: {m.quantity} · {new Date(m.mintedAt).toLocaleDateString("id-ID")}
+                    qty: {m.quantity} · {new Date(m.mintedAt).toLocaleDateString()}
                   </p>
                 </div>
                 {m.txHash && (
-                  <a
-                    href={`${selectedChain.explorer}/tx/${m.txHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs font-mono text-primary hover:underline shrink-0"
-                  >
-                    Tx
-                  </a>
+                  <a href={`${selectedChain.explorer}/tx/${m.txHash}`} target="_blank" rel="noopener noreferrer"
+                    className="text-xs font-mono text-primary hover:underline shrink-0">Tx</a>
                 )}
               </div>
             ))}
