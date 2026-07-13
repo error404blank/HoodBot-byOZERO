@@ -327,25 +327,35 @@ export async function simulateMint(
       const msg = err instanceof Error ? err.message : String(err);
       lastMsg = msg;
 
-      // Fatal errors — insufficient funds / supply exceeded / wrong payment — stop immediately
-      const errorType = classifyMintError(msg);
-      if (errorType === "fatal") {
-        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg, errorType: "fatal" };
-      }
-
-      // ABI / selector mismatch — try next signature
-      const isMissingFn =
+      // ── Determine why this failed ─────────────────────────────────────────
+      // ABI/selector mismatch: function doesn't exist on the contract at all.
+      // These are safe to skip — try the next signature.
+      const isAbiMismatch =
         msg.includes("does not exist on the contract") ||
-        msg.includes("ContractFunctionExecutionError") ||
-        msg.includes("Function") ||
-        msg.includes("selector") ||
-        msg.includes("reverted") ||
-        msg.includes("UNPREDICTABLE_GAS_LIMIT");
+        msg.includes("Function not found") ||
+        msg.includes("Unknown function") ||
+        msg.includes("invalid selector") ||
+        msg.includes("no matching function") ||
+        msg.includes("UNPREDICTABLE_GAS_LIMIT") ||
+        // viem surfaces this when the 4-byte selector isn't in the ABI
+        (msg.includes("ContractFunctionExecutionError") && msg.includes("does not exist"));
 
-      if (!isMissingFn) {
-        // Non-ABI error (network/RPC) — surface immediately
-        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg, errorType: "retryable" };
+      if (isAbiMismatch) {
+        // Silently skip — contract doesn't have this signature
+        continue;
       }
+
+      // Anything else (revert with reason, insufficient funds, sold out, wrong value…)
+      // means the function EXISTS but the call failed for a real reason.
+      // Surface the error immediately — do NOT try other signatures.
+      const errorType = classifyMintError(msg);
+      return {
+        success: false,
+        gasEstimate: "0",
+        gasWithBuffer: "0",
+        errorMessage: msg.slice(0, 240),
+        errorType,
+      };
     }
   }
 

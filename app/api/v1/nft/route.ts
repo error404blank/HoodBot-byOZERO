@@ -77,15 +77,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "walletAddress required for simulate" }, { status: 400 });
     }
     try {
-      // Parallel: detect contract info and simulate with 0 price simultaneously
-      const [info, simZero] = await Promise.all([
-        detectNftContract(contractAddress, chainSlug),
-        simulateMint(contractAddress, quantity, 0n, walletAddress, chainSlug),
-      ]);
-      // If free-price sim failed, retry with actual mint price
-      const sim = simZero.success
-        ? simZero
-        : await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress, chainSlug);
+      // Detect first to get the real mint price — then simulate with correct value.
+      // Using 0n as placeholder caused "wrong payment" reverts on paid contracts.
+      const info = await detectNftContract(contractAddress, chainSlug);
+      const sim = await simulateMint(
+        contractAddress,
+        quantity,
+        info.mintPriceWei,
+        walletAddress,
+        chainSlug,
+      );
 
       return NextResponse.json({
         ...sim,
