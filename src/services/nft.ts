@@ -13,16 +13,13 @@ const ERC721_INTERFACE_ID = "0x80ac58cd";
 const ERC1155_INTERFACE_ID = "0xd9b67a26";
 
 // ─── Explorer ABI fetching ────────────────────────────────────────────────────
-// Maps chain slug → block explorer API endpoint for fetching verified ABI
+// ALL endpoints use Blockscout v2 REST API — no API key required.
+// Etherscan requires an API key so we use public Blockscout instances instead.
 const EXPLORER_ABI_URLS: Partial<Record<MintChainSlug, (addr: string) => string>> = {
-  ethereum: (addr) =>
-    `https://api.etherscan.io/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
-  base: (addr) =>
-    `https://api.basescan.org/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
-  sepolia: (addr) =>
-    `https://api-sepolia.etherscan.io/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
-  robinhood: (addr) =>
-    `https://robinhoodchain.blockscout.com/api/v2/smart-contracts/${addr}`,
+  ethereum:  (addr) => `https://eth.blockscout.com/api/v2/smart-contracts/${addr}`,
+  base:      (addr) => `https://base.blockscout.com/api/v2/smart-contracts/${addr}`,
+  sepolia:   (addr) => `https://eth-sepolia.blockscout.com/api/v2/smart-contracts/${addr}`,
+  robinhood: (addr) => `https://robinhoodchain.blockscout.com/api/v2/smart-contracts/${addr}`,
 };
 
 interface FetchedAbiResult {
@@ -31,33 +28,24 @@ interface FetchedAbiResult {
 }
 
 // Fetch verified ABI from block explorer. Returns null if unverified or error.
+// All URLs use Blockscout v2 REST API: GET /api/v2/smart-contracts/{address}
+// Response: { abi: [...], is_verified: bool, name: string, ... }
 export async function fetchContractAbi(
   contractAddress: string,
   chainSlug: MintChainSlug,
 ): Promise<FetchedAbiResult> {
-  const addr = contractAddress;
   const urlFn = EXPLORER_ABI_URLS[chainSlug];
   if (!urlFn) return { abi: null, source: "fallback" };
 
   try {
-    const url = urlFn(addr);
+    const url = urlFn(contractAddress);
     const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return { abi: null, source: "fallback" };
 
     const data = await res.json() as Record<string, unknown>;
 
-    // Etherscan-style response: { status: "1", result: "[...]" }
-    if (data.status === "1" && typeof data.result === "string") {
-      try {
-        const abi = JSON.parse(data.result) as Abi;
-        return { abi, source: "explorer" };
-      } catch {
-        return { abi: null, source: "fallback" };
-      }
-    }
-
-    // Blockscout v2 response: { abi: [...] }
-    if (Array.isArray(data.abi)) {
+    // Blockscout v2: { abi: [...], is_verified: true }
+    if (Array.isArray(data.abi) && data.abi.length > 0 && data.is_verified) {
       return { abi: data.abi as Abi, source: "explorer" };
     }
 
@@ -70,6 +58,7 @@ export async function fetchContractAbi(
 // ─── Known mint function signatures (ordered by prevalence) ──────────────────
 export const KNOWN_MINT_SIGNATURES = [
   "mint(uint256)",
+  "mint()",
   "mint(address,uint256)",
   "publicMint(uint256)",
   "mintPublic(uint256)",
@@ -77,6 +66,7 @@ export const KNOWN_MINT_SIGNATURES = [
   "safeMint(address)",
   "mintTo(address,uint256)",
   "freeMint(uint256)",
+  "freeMint()",
   "teamMint(uint256)",
   "devMint(uint256)",
 ] as const;
@@ -431,15 +421,71 @@ export interface SimulateResult {
   detectedFn?: string;      // which function signature worked
 }
 
-// All mint function selectors we try — ordered by prevalence
-const SIM_ATTEMPTS = [
-  { fn: "mint",        args: (qty: bigint, _from: `0x${string}`) => [qty]        },
-  { fn: "publicMint",  args: (qty: bigint, _from: `0x${string}`) => [qty]        },
-  { fn: "mintPublic",  args: (qty: bigint, _from: `0x${string}`) => [qty]        },
-  { fn: "mint",        args: (qty: bigint,  from: `0x${string}`) => [from, qty]  },
-  { fn: "safeMint",    args: (_qty: bigint, from: `0x${string}`) => [from]       },
-  { fn: "mintTo",      args: (qty: bigint,  from: `0x${string}`) => [from, qty]  },
-] as const;
+// All mint function candidates for fallback probing — ordered by prevalence.
+// Each entry includes the 4-byte selector (keccak256 of signature) for raw probing.
+// Selectors verified at: https://www.4byte.directory/
+const SIM_ATTEMPTS: Array<{
+  sig: string;             // full signature e.g. "mint(uint256)"
+  selector: `0x${string}`; // 4-byte selector
+  buildCalldata: (qty: bigint, from: `0x${string}`) => `0x${string}`;
+  buildArgs: (qty: bigint, from: `0x${string}`) => unknown[];
+  payable: boolean;
+}> = [
+  {
+    sig: "mint(uint256)", selector: "0xa0712d68",
+    buildCalldata: (qty, _) => `0xa0712d68${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, _) => [qty],
+    payable: true,
+  },
+  {
+    sig: "mint()", selector: "0x1249c58b",
+    buildCalldata: (_, __) => "0x1249c58b" as `0x${string}`,
+    buildArgs: (_, __) => [],
+    payable: true,
+  },
+  {
+    sig: "publicMint(uint256)", selector: "0x2db11544",
+    buildCalldata: (qty, _) => `0x2db11544${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, _) => [qty],
+    payable: true,
+  },
+  {
+    sig: "mintPublic(uint256)", selector: "0xe5a7e6f4",
+    buildCalldata: (qty, _) => `0xe5a7e6f4${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, _) => [qty],
+    payable: true,
+  },
+  {
+    sig: "mint(address,uint256)", selector: "0x40c10f19",
+    buildCalldata: (qty, from) => `0x40c10f19${from.slice(2).padStart(64, "0")}${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, from) => [from, qty],
+    payable: true,
+  },
+  {
+    sig: "safeMint(address)", selector: "0x40d097c3",
+    buildCalldata: (_, from) => `0x40d097c3${from.slice(2).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (_, from) => [from],
+    payable: false,
+  },
+  {
+    sig: "mintTo(address,uint256)", selector: "0x449a52f8",
+    buildCalldata: (qty, from) => `0x449a52f8${from.slice(2).padStart(64, "0")}${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, from) => [from, qty],
+    payable: true,
+  },
+  {
+    sig: "claim(uint256)", selector: "0x379607f5",
+    buildCalldata: (qty, _) => `0x379607f5${qty.toString(16).padStart(64, "0")}` as `0x${string}`,
+    buildArgs: (qty, _) => [qty],
+    payable: true,
+  },
+  {
+    sig: "freeMint()", selector: "0x1b2ef1ca",
+    buildCalldata: (_, __) => "0x1b2ef1ca" as `0x${string}`,
+    buildArgs: (_, __) => [],
+    payable: false,
+  },
+];
 
 // Build args array for a detected mint function
 function buildMintArgs(
@@ -542,50 +588,86 @@ export async function simulateMint(
     }
   }
 
-  // ── Strategy 2: fallback — try hardcoded MINT_ABI signatures ─────────────
-  // Use low-level eth_call via estimateContractGas to detect selector existence
+  // ── Strategy 2: raw selector probing ────────────────────────────────────────
+  // The fundamental problem with estimateContractGas-based probing: both
+  // "selector doesn't exist" and "call reverted" produce similar-looking errors,
+  // making it impossible to tell if we have the wrong signature or the right one
+  // that failed for a business reason.
+  //
+  // Solution: first use eth_call with each selector to classify the response:
+  //   - RPC error "invalid opcode" / empty data → selector exists (EVM dispatched it)
+  //   - Any result / non-empty revert data → selector exists
+  //   - Revert with NO data (0x) AND we got no valid return → may be missing OR may be a payable check
+  //
+  // Then once we find a selector that the EVM dispatched, estimate gas with the
+  // correct value so we can confirm it'll succeed.
   let lastMsg = "";
-  for (const attempt of SIM_ATTEMPTS) {
+
+  // First pass: probe all selectors in parallel to find which ones exist
+  const probeResults = await Promise.all(
+    SIM_ATTEMPTS.map(async (attempt) => {
+      try {
+        const calldata = attempt.buildCalldata(qty, from);
+        // Use eth_call with value to simulate payable functions too
+        await publicClient.call({
+          to: addr,
+          data: calldata,
+          account: from,
+          value: totalValue,
+        });
+        // If eth_call succeeds (or doesn't throw) — selector definitely exists
+        return { attempt, exists: true, revertMsg: null };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // "execution reverted" means the selector EXISTS — EVM dispatched it
+        // but the call failed (wrong value, not started, etc.)
+        const selectorExists =
+          msg.includes("execution reverted") ||
+          msg.includes("revert") ||
+          msg.includes("Reverted") ||
+          // viem ContractFunctionExecutionError wraps the EVM revert
+          msg.includes("ContractFunctionExecutionError");
+
+        return { attempt, exists: selectorExists, revertMsg: msg };
+      }
+    })
+  );
+
+  // Second pass: for found selectors, try estimateContractGas with exact ABI
+  for (const probe of probeResults) {
+    if (!probe.exists) continue;
+
+    const { attempt } = probe;
+    const fnAbi = parseAbi([
+      `function ${attempt.sig}${attempt.payable ? " payable" : ""}` as `function ${string}`,
+    ]);
+    const fnName = attempt.sig.split("(")[0];
+
     try {
       const gas = await publicClient.estimateContractGas({
         address: addr,
-        abi: MINT_ABI,
-        functionName: attempt.fn as "mint" | "publicMint" | "mintPublic" | "safeMint" | "mintTo",
+        abi: fnAbi,
+        functionName: fnName,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        args: attempt.args(qty, from) as any,
+        args: attempt.buildArgs(qty, from) as any,
         account: from,
-        value: totalValue,
+        value: attempt.payable ? totalValue : 0n,
       });
       const gasWithBuffer = BigInt(Math.ceil(Number(gas) * 1.25));
       return {
         success: true,
         gasEstimate: gas.toString(),
         gasWithBuffer: gasWithBuffer.toString(),
-        detectedFn: attempt.fn === "mint" && attempt.args(qty, from).length === 2
-          ? `mint(address,uint256)`
-          : attempt.fn === "safeMint" ? `safeMint(address)`
-          : attempt.fn === "mintTo" ? `mintTo(address,uint256)`
-          : `${attempt.fn}(uint256)`,
+        detectedFn: attempt.sig,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastMsg = msg;
-
-      // Only skip if the selector genuinely doesn't exist on the contract
-      // We detect this by checking for viem's "does not exist on the contract" error
-      // OR by checking if the error comes from a reverted call we can't decode (selector miss)
-      const isDefinitelyMissing =
-        msg.includes("does not exist on the contract") ||
-        msg.includes("Function not found") ||
-        msg.includes("invalid selector") ||
-        msg.includes("no matching function") ||
-        msg.includes("UNPREDICTABLE_GAS_LIMIT");
-
-      if (isDefinitelyMissing) continue;
-
-      // Revert with a known reason = function exists but call conditions failed
       const errorType = classifyMintError(msg);
-      return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType };
+      if (errorType === "fatal") {
+        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType: "fatal" };
+      }
+      // Retryable — store message and try next found selector
     }
   }
 
@@ -694,56 +776,36 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
-    // Build mint attempt list.
-    // If detectedFn is provided (from a prior simulate), use exact ABI for that signature.
-    // Fall back to MINT_ABI trial list only if no detectedFn.
     type WriteFn = () => Promise<`0x${string}`>;
     const qty = BigInt(params.quantity);
 
-    let mintAttempts: WriteFn[];
+    // Build write functions from SIM_ATTEMPTS (in the same order).
+    // If detectedFn is provided, put it first — this is the function
+    // that actually succeeded in simulate, so it's almost certainly correct.
+    const orderedAttempts = params.detectedFn
+      ? [
+          ...SIM_ATTEMPTS.filter((a) => a.sig === params.detectedFn),
+          ...SIM_ATTEMPTS.filter((a) => a.sig !== params.detectedFn),
+        ]
+      : SIM_ATTEMPTS;
 
-    if (params.detectedFn) {
-      // Re-construct the exact ABI for the detected function
-      const sig = params.detectedFn; // e.g. "mint(uint256)" or "publicMint(uint256)"
+    const mintAttempts: WriteFn[] = orderedAttempts.map((attempt) => () => {
+      const sig = attempt.sig;
       const fnName = sig.split("(")[0];
-      const argsStr = sig.slice(fnName.length + 1, -1); // e.g. "uint256" or "address,uint256"
-      const argTypes = argsStr ? argsStr.split(",").map((s) => s.trim()) : [];
-
-      // Build args based on type positions
-      const callArgs: unknown[] = argTypes.map((t) => {
-        if (t === "address") return account.address;
-        if (t.startsWith("uint") || t.startsWith("int")) return qty;
-        if (t === "bool") return true;
-        return qty;
+      const callArgs = attempt.buildArgs(qty, account.address);
+      const fnAbi = parseAbi([
+        `function ${sig}${attempt.payable ? " payable" : ""}` as `function ${string}`,
+      ]);
+      return walletClient.writeContract({
+        address: addr,
+        abi: fnAbi,
+        functionName: fnName,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        args: callArgs as any,
+        value: attempt.payable ? totalValue : 0n,
+        ...gasOverrides,
       });
-
-      const exactAbi = parseAbi([`function ${sig} payable` as `function ${string}`]);
-
-      mintAttempts = [
-        // First attempt: exact detected function
-        () => walletClient.writeContract({
-          address: addr, abi: exactAbi, functionName: fnName,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          args: callArgs as any, value: totalValue, ...gasOverrides,
-        }),
-        // Fallback attempts with MINT_ABI (in case price changed etc.)
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "publicMint", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintPublic", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [account.address, qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "safeMint", args: [account.address], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintTo", args: [account.address, qty], value: totalValue, ...gasOverrides }),
-      ];
-    } else {
-      mintAttempts = [
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "publicMint", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintPublic", args: [qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [account.address, qty], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "safeMint", args: [account.address], value: totalValue, ...gasOverrides }),
-        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintTo", args: [account.address, qty], value: totalValue, ...gasOverrides }),
-      ];
-    }
+    });
 
     let lastError: unknown;
     for (const fn of mintAttempts) {
