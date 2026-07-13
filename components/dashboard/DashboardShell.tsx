@@ -107,31 +107,62 @@ export function DashboardShell() {
     }
   }
 
+  const tabLabel = activeTab === "nfthood" ? "NFTHood" : activeTab.charAt(0).toUpperCase() + activeTab.slice(1);
+
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-dvh bg-background">
+      {/* Desktop sidebar — only renders md+ */}
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
         user={user}
         onLogout={handleLogout}
       />
-      <main className="flex-1 min-w-0 overflow-y-auto">
-        {/* Top bar */}
-        <div className="hidden md:flex items-center justify-between px-6 py-3 border-b border-border/50 bg-card/30 sticky top-0 z-10 backdrop-blur-sm">
-          <h1 className="text-sm font-mono font-semibold text-foreground capitalize">
-            {activeTab === "nfthood" ? "NFTHood" : activeTab}
-          </h1>
+
+      {/* Main column — fills full width on mobile, rest on desktop */}
+      <div className="flex-1 min-w-0 flex flex-col h-dvh overflow-hidden">
+
+        {/* Desktop top bar */}
+        <header className="hidden md:flex items-center justify-between px-6 py-3 border-b border-border/50 bg-card/30 shrink-0 backdrop-blur-sm">
+          <h1 className="text-sm font-mono font-semibold text-foreground">{tabLabel}</h1>
           <div className="flex items-center gap-3">
             <span className="text-xs font-mono text-muted-foreground">
               {user.username ? `@${user.username}` : user.firstName ?? ""}
             </span>
             <span className="w-1.5 h-1.5 rounded-full bg-primary" title="Session active" />
           </div>
-        </div>
+        </header>
 
-        {/* Tab content */}
-        <div className="w-full">{renderTab()}</div>
-      </main>
+        {/* Mobile top bar — full width sticky header */}
+        <header className="md:hidden shrink-0 flex items-center justify-between px-4 py-3 border-b border-border/50 bg-sidebar sticky top-0 z-20">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-md bg-primary/20 border border-primary/30 flex items-center justify-center">
+              <span className="text-primary font-mono font-bold text-xs">H</span>
+            </div>
+            <div>
+              <span className="text-sm font-mono font-bold text-foreground">HoodBot</span>
+              <span className="text-[10px] font-mono text-muted-foreground ml-2 opacity-70">{tabLabel}</span>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              // Trigger mobile drawer in Sidebar via a custom event
+              window.dispatchEvent(new CustomEvent("hoodbot:open-menu"));
+            }}
+            className="p-2 -mr-1 text-muted-foreground hover:text-foreground rounded-md hover:bg-white/5 transition-colors"
+            aria-label="Open menu"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+              <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </header>
+
+        {/* Scrollable content */}
+        <main className="flex-1 overflow-y-auto overscroll-contain">
+          {renderTab()}
+        </main>
+      </div>
     </div>
   );
 }

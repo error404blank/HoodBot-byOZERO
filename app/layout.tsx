@@ -7,13 +7,17 @@ const _geistSans = Geist({ subsets: ['latin'] })
 const _geistMono = Geist_Mono({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'HoodBot — DeFi LP & NFT Bot',
-  description: 'HoodBot: Telegram bot for automated Uniswap V3/V4 liquidity provision and NFT minting on Robinhood Chain.',
+  title: 'NFTHood by HoodBot',
+  description: 'NFTHood — DeFi console for multi-chain NFT minting, wallet management, and LP positions. Powered by HoodBot.',
 }
 
 export const viewport: Viewport = {
   colorScheme: 'dark',
-  themeColor: '#00c853',
+  themeColor: '#0a0e0c',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 }
 
 export default function RootLayout({
@@ -23,7 +27,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="bg-background">
-      <body className="antialiased font-sans">
+      <body className="antialiased font-mono bg-background text-foreground">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>

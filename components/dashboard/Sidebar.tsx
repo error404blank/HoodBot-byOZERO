@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export type TabId = "home" | "wallets" | "nfthood" | "send" | "rpcs" | "positions" | "settings";
 
@@ -89,6 +89,13 @@ export function Sidebar({ activeTab, onTabChange, user, onLogout }: SidebarProps
 
   const displayName = user?.firstName ?? user?.username ?? "User";
 
+  // Listen for open event dispatched by DashboardShell's mobile header
+  useEffect(() => {
+    const handler = () => setMobileOpen(true);
+    window.addEventListener("hoodbot:open-menu", handler);
+    return () => window.removeEventListener("hoodbot:open-menu", handler);
+  }, []);
+
   const NavContent = () => (
     <>
       {/* Logo */}
@@ -156,25 +163,6 @@ export function Sidebar({ activeTab, onTabChange, user, onLogout }: SidebarProps
       <aside className="hidden md:flex flex-col w-52 shrink-0 border-r border-border/50 bg-sidebar h-screen sticky top-0">
         <NavContent />
       </aside>
-
-      {/* Mobile top bar */}
-      <div className="md:hidden flex items-center justify-between px-4 py-3 border-b border-border/50 bg-sidebar sticky top-0 z-20">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded bg-primary/20 border border-primary/30 flex items-center justify-center">
-            <span className="text-primary font-mono font-bold text-[10px]">H</span>
-          </div>
-          <span className="text-sm font-mono font-bold text-foreground">HoodBot</span>
-        </div>
-        <button
-          onClick={() => setMobileOpen(true)}
-          className="p-2 text-muted-foreground hover:text-foreground"
-          aria-label="Open menu"
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-            <path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
-      </div>
 
       {/* Mobile drawer overlay */}
       {mobileOpen && (
