@@ -1,15 +1,127 @@
-import { parseAbi, parseEther, parseGwei, formatEther, encodeFunctionData } from "viem";
+import { parseAbi, parseGwei, formatEther, type Abi } from "viem";
 import {
   getPublicClient,
   getWalletClient,
   getPublicClientForChain,
   getWalletClientForChain,
   type MintChainSlug,
+  SUPPORTED_MINT_CHAINS,
 } from "./chain";
 
 // ─── Interface IDs ────────────────────────────────────────────────────────────
 const ERC721_INTERFACE_ID = "0x80ac58cd";
 const ERC1155_INTERFACE_ID = "0xd9b67a26";
+
+// ─── Explorer ABI fetching ────────────────────────────────────────────────────
+// Maps chain slug → block explorer API endpoint for fetching verified ABI
+const EXPLORER_ABI_URLS: Partial<Record<MintChainSlug, (addr: string) => string>> = {
+  ethereum: (addr) =>
+    `https://api.etherscan.io/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
+  base: (addr) =>
+    `https://api.basescan.org/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
+  sepolia: (addr) =>
+    `https://api-sepolia.etherscan.io/api?module=contract&action=getabi&address=${addr}&apikey=YourApiKeyToken`,
+  robinhood: (addr) =>
+    `https://robinhoodchain.blockscout.com/api/v2/smart-contracts/${addr}`,
+};
+
+interface FetchedAbiResult {
+  abi: Abi | null;
+  source: "explorer" | "fallback";
+}
+
+// Fetch verified ABI from block explorer. Returns null if unverified or error.
+export async function fetchContractAbi(
+  contractAddress: string,
+  chainSlug: MintChainSlug,
+): Promise<FetchedAbiResult> {
+  const addr = contractAddress;
+  const urlFn = EXPLORER_ABI_URLS[chainSlug];
+  if (!urlFn) return { abi: null, source: "fallback" };
+
+  try {
+    const url = urlFn(addr);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) return { abi: null, source: "fallback" };
+
+    const data = await res.json() as Record<string, unknown>;
+
+    // Etherscan-style response: { status: "1", result: "[...]" }
+    if (data.status === "1" && typeof data.result === "string") {
+      try {
+        const abi = JSON.parse(data.result) as Abi;
+        return { abi, source: "explorer" };
+      } catch {
+        return { abi: null, source: "fallback" };
+      }
+    }
+
+    // Blockscout v2 response: { abi: [...] }
+    if (Array.isArray(data.abi)) {
+      return { abi: data.abi as Abi, source: "explorer" };
+    }
+
+    return { abi: null, source: "fallback" };
+  } catch {
+    return { abi: null, source: "fallback" };
+  }
+}
+
+// ─── Known mint function signatures (ordered by prevalence) ──────────────────
+export const KNOWN_MINT_SIGNATURES = [
+  "mint(uint256)",
+  "mint(address,uint256)",
+  "publicMint(uint256)",
+  "mintPublic(uint256)",
+  "claim(uint256)",
+  "safeMint(address)",
+  "mintTo(address,uint256)",
+  "freeMint(uint256)",
+  "teamMint(uint256)",
+  "devMint(uint256)",
+] as const;
+
+// From a verified ABI, return the first matching mint-candidate function name + inputs
+export interface DetectedMintFn {
+  name: string;
+  inputs: Array<{ type: string; name?: string }>;
+  signature: string; // e.g. "mint(uint256)"
+  payable: boolean;
+}
+
+export function detectMintFunctionsFromAbi(abi: Abi): DetectedMintFn[] {
+  const mintKeywords = ["mint", "claim", "purchase", "buy"];
+  const results: DetectedMintFn[] = [];
+
+  for (const item of abi) {
+    if (item.type !== "function") continue;
+    const name = item.name.toLowerCase();
+    if (!mintKeywords.some((kw) => name.includes(kw))) continue;
+    // Skip view/pure functions
+    if (item.stateMutability === "view" || item.stateMutability === "pure") continue;
+
+    const inputs = item.inputs ?? [];
+    const sig = `${item.name}(${inputs.map((i) => i.type).join(",")})`;
+    results.push({
+      name: item.name,
+      inputs: inputs.map((i) => ({ type: i.type, name: i.name ?? "" })),
+      signature: sig,
+      payable: item.stateMutability === "payable",
+    });
+  }
+
+  // Sort: known signatures first
+  results.sort((a, b) => {
+    const ai = KNOWN_MINT_SIGNATURES.indexOf(a.signature as never);
+    const bi = KNOWN_MINT_SIGNATURES.indexOf(b.signature as never);
+    if (ai === -1 && bi === -1) return 0;
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
+  return results;
+}
 
 // ─── ABIs ─────────────────────────────────────────────────────────────────────
 const ERC165_ABI = parseAbi([
@@ -76,6 +188,9 @@ export interface NftContractInfo {
   hasCode: boolean;
   phase: MintPhase;
   remaining: string; // "unknown" or number string
+  // ABI-based function detection
+  mintFunctions: DetectedMintFn[];   // candidate mint functions found in ABI
+  abiSource: "explorer" | "fallback"; // where the ABI came from
 }
 
 // ─── Error classification (from MINTER's classify_mint_error) ─────────────────
@@ -145,7 +260,14 @@ export async function detectNftContract(
     : getPublicClientForChain(chainSlug);
   const addr = contractAddress as `0x${string}`;
 
-  const code = await publicClient.getCode({ address: addr });
+  // Fetch code + ABI in parallel
+  const [code, abiResult] = await Promise.all([
+    publicClient.getCode({ address: addr }),
+    fetchContractAbi(contractAddress, chainSlug),
+  ]);
+
+  const mintFunctions = abiResult.abi ? detectMintFunctionsFromAbi(abiResult.abi) : [];
+
   if (!code || code === "0x") {
     return {
       address: contractAddress,
@@ -161,6 +283,8 @@ export async function detectNftContract(
       hasCode: false,
       phase: "unknown",
       remaining: "unknown",
+      mintFunctions: [],
+      abiSource: "fallback",
     };
   }
 
@@ -263,6 +387,8 @@ export async function detectNftContract(
     hasCode: true,
     phase,
     remaining,
+    mintFunctions,
+    abiSource: abiResult.source,
   };
 }
 
@@ -315,12 +441,38 @@ const SIM_ATTEMPTS = [
   { fn: "mintTo",      args: (qty: bigint,  from: `0x${string}`) => [from, qty]  },
 ] as const;
 
+// Build args array for a detected mint function
+function buildMintArgs(
+  fn: DetectedMintFn,
+  qty: bigint,
+  from: `0x${string}`,
+): unknown[] {
+  return fn.inputs.map((input) => {
+    const t = input.type;
+    const n = (input.name ?? "").toLowerCase();
+    if (t.startsWith("uint") || t.startsWith("int")) {
+      // quantity-like param
+      if (n.includes("qty") || n.includes("quantity") || n.includes("amount") || n.includes("count") || n.includes("num")) {
+        return qty;
+      }
+      return qty; // default: treat as quantity
+    }
+    if (t === "address") return from;
+    if (t === "bool") return true;
+    return qty; // fallback
+  });
+}
+
 export async function simulateMint(
   contractAddress: string,
   quantity: number,
   mintPriceWei: bigint,
   walletAddress: string,
-  chainSlug: MintChainSlug = "robinhood"
+  chainSlug: MintChainSlug = "robinhood",
+  // Optional: pre-fetched mint functions from ABI (avoids refetching)
+  mintFunctions?: DetectedMintFn[],
+  // Optional: override which function to try first
+  overrideFnSignature?: string,
 ): Promise<SimulateResult> {
   const publicClient = chainSlug === "robinhood"
     ? getPublicClient()
@@ -330,8 +482,69 @@ export async function simulateMint(
   const totalValue = mintPriceWei * BigInt(quantity);
   const qty = BigInt(quantity);
 
-  let lastMsg = "";
+  // ── Strategy 1: use verified ABI functions if available ───────────────────
+  let abiFunctions = mintFunctions ?? [];
 
+  // Fetch ABI if not provided
+  if (abiFunctions.length === 0) {
+    const abiResult = await fetchContractAbi(contractAddress, chainSlug);
+    if (abiResult.abi) {
+      abiFunctions = detectMintFunctionsFromAbi(abiResult.abi);
+    }
+  }
+
+  // If override specified, put that function first
+  if (overrideFnSignature && abiFunctions.length > 0) {
+    abiFunctions = [
+      ...abiFunctions.filter((f) => f.signature === overrideFnSignature),
+      ...abiFunctions.filter((f) => f.signature !== overrideFnSignature),
+    ];
+  }
+
+  // Try each ABI-derived function
+  for (const fn of abiFunctions) {
+    const args = buildMintArgs(fn, qty, from);
+    const fnAbi = parseAbi([
+      `function ${fn.signature}${fn.payable ? " payable" : ""}` as `function ${string}`,
+    ]);
+    try {
+      const gas = await publicClient.estimateContractGas({
+        address: addr,
+        abi: fnAbi,
+        functionName: fn.name,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        args: args as any,
+        account: from,
+        value: fn.payable ? totalValue : 0n,
+      });
+      const gasWithBuffer = BigInt(Math.ceil(Number(gas) * 1.25));
+      return {
+        success: true,
+        gasEstimate: gas.toString(),
+        gasWithBuffer: gasWithBuffer.toString(),
+        detectedFn: fn.signature,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const errorType = classifyMintError(msg);
+      if (errorType === "fatal") {
+        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType: "fatal" };
+      }
+      // For ABI-derived functions: a revert IS a real error (function exists), surface it
+      // unless it looks like a selector mismatch (shouldn't happen with real ABI but just in case)
+      const isSelectorMiss =
+        msg.includes("does not exist on the contract") ||
+        msg.includes("Function not found") ||
+        msg.includes("invalid selector");
+      if (!isSelectorMiss) {
+        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType: "retryable" };
+      }
+    }
+  }
+
+  // ── Strategy 2: fallback — try hardcoded MINT_ABI signatures ─────────────
+  // Use low-level eth_call via estimateContractGas to detect selector existence
+  let lastMsg = "";
   for (const attempt of SIM_ATTEMPTS) {
     try {
       const gas = await publicClient.estimateContractGas({
@@ -348,41 +561,31 @@ export async function simulateMint(
         success: true,
         gasEstimate: gas.toString(),
         gasWithBuffer: gasWithBuffer.toString(),
-        detectedFn: `${attempt.fn}(${attempt.args(qty, from).map(String).join(", ")})`,
+        detectedFn: attempt.fn === "mint" && attempt.args(qty, from).length === 2
+          ? `mint(address,uint256)`
+          : attempt.fn === "safeMint" ? `safeMint(address)`
+          : attempt.fn === "mintTo" ? `mintTo(address,uint256)`
+          : `${attempt.fn}(uint256)`,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastMsg = msg;
 
-      // ── Determine why this failed ─────────────────────────────────────────
-      // ABI/selector mismatch: function doesn't exist on the contract at all.
-      // These are safe to skip — try the next signature.
-      const isAbiMismatch =
+      // Only skip if the selector genuinely doesn't exist on the contract
+      // We detect this by checking for viem's "does not exist on the contract" error
+      // OR by checking if the error comes from a reverted call we can't decode (selector miss)
+      const isDefinitelyMissing =
         msg.includes("does not exist on the contract") ||
         msg.includes("Function not found") ||
-        msg.includes("Unknown function") ||
         msg.includes("invalid selector") ||
         msg.includes("no matching function") ||
-        msg.includes("UNPREDICTABLE_GAS_LIMIT") ||
-        // viem surfaces this when the 4-byte selector isn't in the ABI
-        (msg.includes("ContractFunctionExecutionError") && msg.includes("does not exist"));
+        msg.includes("UNPREDICTABLE_GAS_LIMIT");
 
-      if (isAbiMismatch) {
-        // Silently skip — contract doesn't have this signature
-        continue;
-      }
+      if (isDefinitelyMissing) continue;
 
-      // Anything else (revert with reason, insufficient funds, sold out, wrong value…)
-      // means the function EXISTS but the call failed for a real reason.
-      // Surface the error immediately — do NOT try other signatures.
+      // Revert with a known reason = function exists but call conditions failed
       const errorType = classifyMintError(msg);
-      return {
-        success: false,
-        gasEstimate: "0",
-        gasWithBuffer: "0",
-        errorMessage: msg.slice(0, 240),
-        errorType,
-      };
+      return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType };
     }
   }
 
@@ -391,8 +594,8 @@ export async function simulateMint(
     gasEstimate: "0",
     gasWithBuffer: "0",
     errorMessage: lastMsg
-      ? `Simulation failed: ${lastMsg.slice(0, 160)}`
-      : "No compatible mint function found. The contract may use a custom ABI or is not yet mintable.",
+      ? `No mint function succeeded. Last error: ${lastMsg.slice(0, 160)}`
+      : "No compatible mint function found. Contract ABI is unverified and no known signature matched.",
     errorType: "retryable",
   };
 }
@@ -491,53 +694,55 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
-    // If a specific function was detected by simulateMint, use it directly.
-    // Otherwise fall back to trying all known signatures.
+    // Build mint attempt list.
+    // If detectedFn is provided (from a prior simulate), use exact ABI for that signature.
+    // Fall back to MINT_ABI trial list only if no detectedFn.
     type WriteFn = () => Promise<`0x${string}`>;
-    const ALL_MINT_ATTEMPTS: WriteFn[] = [
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "mint",
-        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
-      }),
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "publicMint",
-        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
-      }),
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "mintPublic",
-        args: [BigInt(params.quantity)], value: totalValue, ...gasOverrides,
-      }),
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "mint",
-        args: [account.address, BigInt(params.quantity)], value: totalValue, ...gasOverrides,
-      }),
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "safeMint",
-        args: [account.address], value: totalValue, ...gasOverrides,
-      }),
-      () => walletClient.writeContract({
-        address: addr, abi: MINT_ABI, functionName: "mintTo",
-        args: [account.address, BigInt(params.quantity)], value: totalValue, ...gasOverrides,
-      }),
-    ];
+    const qty = BigInt(params.quantity);
 
-    // Build the attempt list: if detectedFn is known, put that first (and only try it)
     let mintAttempts: WriteFn[];
+
     if (params.detectedFn) {
-      const fnName = params.detectedFn; // e.g. "mint", "publicMint", "mintTo"
-      const hasAddress = fnName.includes(account.address);
-      const fnBase = fnName.split("(")[0];
-      const matched = ALL_MINT_ATTEMPTS.filter((_, i) => {
-        // Map index to function names in same order as ALL_MINT_ATTEMPTS above
-        const names = ["mint","publicMint","mintPublic","mint_addr","safeMint","mintTo"];
-        const n = names[i];
-        if (fnBase === "mint" && hasAddress) return n === "mint_addr";
-        if (fnBase === "mint") return n === "mint";
-        return n === fnBase;
+      // Re-construct the exact ABI for the detected function
+      const sig = params.detectedFn; // e.g. "mint(uint256)" or "publicMint(uint256)"
+      const fnName = sig.split("(")[0];
+      const argsStr = sig.slice(fnName.length + 1, -1); // e.g. "uint256" or "address,uint256"
+      const argTypes = argsStr ? argsStr.split(",").map((s) => s.trim()) : [];
+
+      // Build args based on type positions
+      const callArgs: unknown[] = argTypes.map((t) => {
+        if (t === "address") return account.address;
+        if (t.startsWith("uint") || t.startsWith("int")) return qty;
+        if (t === "bool") return true;
+        return qty;
       });
-      mintAttempts = matched.length > 0 ? [...matched, ...ALL_MINT_ATTEMPTS] : ALL_MINT_ATTEMPTS;
+
+      const exactAbi = parseAbi([`function ${sig} payable` as `function ${string}`]);
+
+      mintAttempts = [
+        // First attempt: exact detected function
+        () => walletClient.writeContract({
+          address: addr, abi: exactAbi, functionName: fnName,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          args: callArgs as any, value: totalValue, ...gasOverrides,
+        }),
+        // Fallback attempts with MINT_ABI (in case price changed etc.)
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "publicMint", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintPublic", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [account.address, qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "safeMint", args: [account.address], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintTo", args: [account.address, qty], value: totalValue, ...gasOverrides }),
+      ];
     } else {
-      mintAttempts = ALL_MINT_ATTEMPTS;
+      mintAttempts = [
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "publicMint", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintPublic", args: [qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mint", args: [account.address, qty], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "safeMint", args: [account.address], value: totalValue, ...gasOverrides }),
+        () => walletClient.writeContract({ address: addr, abi: MINT_ABI, functionName: "mintTo", args: [account.address, qty], value: totalValue, ...gasOverrides }),
+      ];
     }
 
     let lastError: unknown;

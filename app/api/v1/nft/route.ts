@@ -69,7 +69,13 @@ export async function POST(req: NextRequest) {
         }, { status: 404 });
       }
       const info = await detectNftContract(contractAddress, detectedChain);
-      return NextResponse.json({ ...info, mintPriceWei: info.mintPriceWei.toString(), detectedChain });
+      return NextResponse.json({
+        ...info,
+        mintPriceWei: info.mintPriceWei.toString(),
+        detectedChain,
+        mintFunctions: info.mintFunctions,
+        abiSource: info.abiSource,
+      });
     } catch (err) {
       return NextResponse.json({ error: String(err) }, { status: 500 });
     }
@@ -94,15 +100,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "walletAddress required for simulate" }, { status: 400 });
     }
     try {
-      // Detect first to get the real mint price — then simulate with correct value.
-      // Using 0n as placeholder caused "wrong payment" reverts on paid contracts.
+      // Detect first — get real mint price AND verified ABI mint functions
       const info = await detectNftContract(contractAddress, chainSlug);
+
+      // Pass overrideFnSignature if caller requested a specific function
+      const overrideFn = body.overrideFnSignature as string | undefined;
+
       const sim = await simulateMint(
         contractAddress,
         quantity,
         info.mintPriceWei,
         walletAddress,
         chainSlug,
+        info.mintFunctions,   // pass ABI-derived functions — avoids refetching
+        overrideFn,
       );
 
       return NextResponse.json({
@@ -111,6 +122,8 @@ export async function POST(req: NextRequest) {
         mintPrice: info.mintPrice,
         phase: info.phase,
         standard: info.standard,
+        abiSource: info.abiSource,
+        mintFunctions: info.mintFunctions,  // return to frontend for override UI
       });
     } catch (err) {
       return NextResponse.json({ error: String(err) }, { status: 500 });

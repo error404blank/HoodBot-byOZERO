@@ -18,6 +18,13 @@ interface MintHistory {
   mintedAt: string;
 }
 
+interface MintFnInfo {
+  name: string;
+  signature: string;
+  payable: boolean;
+  inputs: Array<{ type: string; name?: string }>;
+}
+
 interface ContractCard {
   name: string;
   symbol: string;
@@ -29,6 +36,8 @@ interface ContractCard {
   remaining: string;
   detectedChain: string;
   hasCode: boolean;
+  mintFunctions: MintFnInfo[];
+  abiSource: "explorer" | "fallback";
 }
 
 type DetectStatus = "idle" | "detecting" | "done" | "error";
@@ -66,11 +75,14 @@ export function NftHoodTab() {
   const [sniperMode, setSniperMode]     = useState(false);
   const [sniperTimeout, setSniperTimeout] = useState(60);
 
+  // Function override (user can manually pick which mint fn to use)
+  const [overrideFn, setOverrideFn] = useState<string>("");
+
   // Mint result
   const [mintStatus, setMintStatus] = useState<MintStatus>("idle");
   const [mintResult, setMintResult] = useState<{
     txHash?: string; gasEstimate?: string; gasWithBuffer?: string;
-    detectedFn?: string; error?: string;
+    detectedFn?: string; abiSource?: string; error?: string;
   } | null>(null);
 
   // Derived — the currently selected chain object
@@ -108,9 +120,16 @@ export function NftHoodTab() {
         setDetectError(data.error);
       } else {
         setDetectStatus("done");
-        setContractCard({ ...data, detectedChain: data.detectedChain ?? chain });
+        setContractCard({
+          ...data,
+          detectedChain: data.detectedChain ?? chain,
+          mintFunctions: data.mintFunctions ?? [],
+          abiSource: data.abiSource ?? "fallback",
+        });
         // Auto-select the chain the contract was found on
         if (data.detectedChain) setChain(data.detectedChain);
+        // Auto-pick the first detected function as default
+        if (data.mintFunctions?.[0]) setOverrideFn(data.mintFunctions[0].signature);
       }
     } catch (e) {
       setDetectStatus("error");
@@ -124,6 +143,7 @@ export function NftHoodTab() {
     setDetectStatus("idle");
     setDetectError("");
     setMintResult(null);
+    setOverrideFn("");
     if (/^0x[0-9a-fA-F]{40}$/.test(val)) autoDetect(val);
   }
 
@@ -138,7 +158,10 @@ export function NftHoodTab() {
       const res = await fetch("/api/v1/nft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "simulate", contractAddress: contract, chainSlug: chain, quantity, walletAddress }),
+        body: JSON.stringify({
+        action: "simulate", contractAddress: contract, chainSlug: chain, quantity, walletAddress,
+        overrideFnSignature: overrideFn || undefined,
+      }),
       });
       const data = await res.json() as {
         success?: boolean; gasEstimate?: string; gasWithBuffer?: string;
@@ -149,7 +172,14 @@ export function NftHoodTab() {
         setMintResult({ error: data.errorMessage ?? data.error ?? "Simulation failed" });
       } else {
         setMintStatus("success");
-        setMintResult({ gasEstimate: data.gasEstimate, gasWithBuffer: data.gasWithBuffer, detectedFn: data.detectedFn });
+        setMintResult({
+          gasEstimate: data.gasEstimate,
+          gasWithBuffer: data.gasWithBuffer,
+          detectedFn: data.detectedFn,
+          abiSource: data.abiSource,
+        });
+        // Update the override to the function that actually worked
+        if (data.detectedFn) setOverrideFn(data.detectedFn);
       }
       return;
     }
@@ -166,7 +196,7 @@ export function NftHoodTab() {
         walletId: Number(walletId),
         quantity,
         gasPreset,
-        detectedFn: mintResult?.detectedFn,
+        detectedFn: overrideFn || mintResult?.detectedFn,
         ...(gasPreset === "custom" && customMaxFee ? {
           maxFeePerGasGwei: Number(customMaxFee),
           maxPriorityFeePerGasGwei: Number(customPriorityFee || "1"),
@@ -263,6 +293,47 @@ export function NftHoodTab() {
                 </p>
               </div>
             </div>
+
+            {/* ABI source badge */}
+            <div className="flex items-center gap-2 pt-1">
+              <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${contractCard.abiSource === "explorer" ? "border-primary/30 text-primary bg-primary/5" : "border-muted text-muted-foreground/60"}`}>
+                ABI: {contractCard.abiSource === "explorer" ? "verified" : "fallback"}
+              </span>
+              {contractCard.mintFunctions.length > 0 && (
+                <span className="text-[10px] font-mono text-muted-foreground/60">
+                  {contractCard.mintFunctions.length} mint fn{contractCard.mintFunctions.length > 1 ? "s" : ""} found
+                </span>
+              )}
+            </div>
+
+            {/* Detected mint functions — user can override */}
+            {contractCard.mintFunctions.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest">Mint Function</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {contractCard.mintFunctions.map((fn) => (
+                    <button
+                      key={fn.signature}
+                      onClick={() => setOverrideFn(fn.signature)}
+                      className={`text-[10px] font-mono px-2 py-1 rounded border transition-colors ${
+                        overrideFn === fn.signature
+                          ? "border-primary/50 bg-primary/15 text-primary"
+                          : "border-border text-muted-foreground hover:border-primary/30"
+                      }`}
+                    >
+                      {fn.signature}
+                      {fn.payable && <span className="ml-1 opacity-50">payable</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {contractCard.mintFunctions.length === 0 && contractCard.hasCode && (
+              <p className="text-[10px] font-mono text-yellow-400/80 pt-1">
+                ABI unverified — will try common signatures automatically.
+              </p>
+            )}
 
             {!contractCard.hasCode && (
               <p className="text-[11px] font-mono text-yellow-400 pt-1">
@@ -445,7 +516,12 @@ export function NftHoodTab() {
                   </p>
                 )}
                 {mintResult.detectedFn && (
-                  <p className="text-[10px] font-mono text-muted-foreground/60">Fn: {mintResult.detectedFn}</p>
+                  <p className="text-[10px] font-mono text-muted-foreground/60">
+                    Fn: <span className="text-foreground">{mintResult.detectedFn}</span>
+                    {mintResult.abiSource && (
+                      <span className="ml-2 opacity-50">({mintResult.abiSource} ABI)</span>
+                    )}
+                  </p>
                 )}
                 {mintResult.txHash && (
                   <a href={`${selectedChain.explorer}/tx/${mintResult.txHash}`} target="_blank" rel="noopener noreferrer"
