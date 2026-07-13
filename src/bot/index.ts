@@ -3,7 +3,7 @@ import { conversations, createConversation } from "@grammyjs/conversations";
 import type { MyContext, SessionData } from "./types";
 import { db } from "../db";
 import { users, wallets, lpPositions, nftMints, loginCodes, webSessions } from "../db/schema";
-import { eq, and, isNull, desc, gt } from "drizzle-orm";
+import { eq, and, isNull, desc, gt, count } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { createWalletConversation } from "./conversations/createWallet";
 import { importWalletConversation } from "./conversations/importWallet";
@@ -91,6 +91,7 @@ bot.command("help", async (ctx) => {
       `/wallet — Wallet management\n` +
       `/balance — Check ETH balance of active wallet\n` +
       `/renamewallet <index> <name> — Rename a wallet\n` +
+      `/deletewallet <index> — Delete a wallet\n` +
       `/lp — Add/manage liquidity\n` +
       `/positions — View open LP positions\n` +
       `/nft — Mint NFTs\n` +
@@ -239,9 +240,73 @@ bot.command("wallet", async (ctx) => {
     .row()
     .text("My Wallets", "cmd_list_wallets")
     .row()
+    .text("Delete Wallet", "cmd_delete_wallet_list")
+    .row()
     .text("Back", "cmd_start");
 
   await ctx.reply("Wallet Management:", { reply_markup: keyboard });
+});
+
+// ── /deletewallet — delete wallet by index ────────────────────────────────────
+// Usage: /deletewallet 1
+bot.command("deletewallet", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found. Use /start first."); return; }
+
+  const args = ctx.match?.trim() ?? "";
+  const index = parseInt(args, 10);
+
+  if (!args || isNaN(index) || index < 1) {
+    // Show wallet list with indices so user knows which number to use
+    const userWallets = await db.query.wallets.findMany({
+      where: eq(wallets.userId, user.id),
+      orderBy: (t, { asc }) => [asc(t.id)],
+    });
+    if (userWallets.length === 0) {
+      await ctx.reply("No wallets found.");
+      return;
+    }
+    const lines = userWallets.map(
+      (w, i) => `${i + 1}. ${w.isActive ? "[ACTIVE] " : ""}${w.name}\n   <code>${w.address}</code>`
+    );
+    await ctx.reply(
+      `Usage: /deletewallet <index>\n\nYour wallets:\n\n${lines.join("\n\n")}\n\nExample: /deletewallet 1`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  const userWallets = await db.query.wallets.findMany({
+    where: eq(wallets.userId, user.id),
+    orderBy: (t, { asc }) => [asc(t.id)],
+  });
+
+  if (userWallets.length <= 1) {
+    await ctx.reply(
+      "Cannot delete your only wallet.\nCreate or import another wallet first, then delete this one."
+    );
+    return;
+  }
+
+  const wallet = userWallets[index - 1];
+  if (!wallet) {
+    await ctx.reply(`No wallet at index ${index}. You have ${userWallets.length} wallet(s). Use /deletewallet to see the list.`);
+    return;
+  }
+
+  // Ask for confirmation with inline keyboard
+  const keyboard = new InlineKeyboard()
+    .text("Yes, delete it", `confirm_delete_wallet:${wallet.id}`)
+    .text("Cancel", "cancel_delete_wallet");
+
+  await ctx.reply(
+    `Delete wallet?\n\n` +
+    `Name: ${wallet.name}\n` +
+    `Address: <code>${wallet.address}</code>\n\n` +
+    `This action cannot be undone. The wallet will also be removed from the web dashboard.`,
+    { parse_mode: "HTML", reply_markup: keyboard }
+  );
 });
 
 // ── /lp ────────────────────────────────────────────────────────────────────────
@@ -390,9 +455,98 @@ bot.callbackQuery("cmd_list_wallets", async (ctx) => {
   }
 
   const lines = userWallets.map(
-    (w) => `${w.isActive ? "[ACTIVE] " : ""}${w.name}: <code>${w.address}</code>`
+    (w, i) => `${i + 1}. ${w.isActive ? "[ACTIVE] " : ""}${w.name}\n   <code>${w.address}</code>`
   );
-  await ctx.reply(`Your Wallets:\n\n${lines.join("\n")}`, { parse_mode: "HTML" });
+  await ctx.reply(`Your Wallets:\n\n${lines.join("\n\n")}`, { parse_mode: "HTML" });
+});
+
+// Show wallet list with delete buttons
+bot.callbackQuery("cmd_delete_wallet_list", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found."); return; }
+
+  const userWallets = await db.query.wallets.findMany({
+    where: eq(wallets.userId, user.id),
+    orderBy: (t, { asc }) => [asc(t.id)],
+  });
+
+  if (userWallets.length === 0) {
+    await ctx.reply("No wallets found.");
+    return;
+  }
+
+  if (userWallets.length === 1) {
+    await ctx.reply(
+      "Cannot delete your only wallet.\nCreate or import another wallet first."
+    );
+    return;
+  }
+
+  const keyboard = new InlineKeyboard();
+  userWallets.forEach((w, i) => {
+    keyboard.text(`Delete #${i + 1}: ${w.name} (${shortAddress(w.address)})`, `confirm_delete_wallet:${w.id}`).row();
+  });
+  keyboard.text("Cancel", "cancel_delete_wallet");
+
+  await ctx.reply(
+    "Which wallet do you want to delete?\n\nThis cannot be undone.",
+    { reply_markup: keyboard }
+  );
+});
+
+// Confirmation callback: confirm_delete_wallet:<walletId>
+bot.callbackQuery(/^confirm_delete_wallet:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const walletId = parseInt(ctx.match[1], 10);
+  const telegramId = BigInt(ctx.from!.id);
+
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found."); return; }
+
+  // Verify wallet belongs to this user
+  const wallet = await db.query.wallets.findFirst({
+    where: and(eq(wallets.id, walletId), eq(wallets.userId, user.id)),
+  });
+  if (!wallet) { await ctx.reply("Wallet not found."); return; }
+
+  // Safety: prevent deleting last wallet
+  const [{ value: total }] = await db
+    .select({ value: count() })
+    .from(wallets)
+    .where(eq(wallets.userId, user.id));
+
+  if (total <= 1) {
+    await ctx.reply("Cannot delete your only wallet. Create or import another first.");
+    return;
+  }
+
+  // If deleting the active wallet, activate the next one
+  if (wallet.isActive) {
+    const next = await db.query.wallets.findFirst({
+      where: and(eq(wallets.userId, user.id)),
+      orderBy: (t, { asc }) => [asc(t.id)],
+    });
+    if (next && next.id !== walletId) {
+      await db.update(wallets).set({ isActive: true }).where(eq(wallets.id, next.id));
+    }
+  }
+
+  await db.delete(wallets).where(eq(wallets.id, walletId));
+
+  await ctx.reply(
+    `Wallet deleted.\n\n` +
+    `Name: ${wallet.name}\n` +
+    `Address: ${wallet.address}\n\n` +
+    `Changes are synced automatically — this wallet is also removed from the web dashboard.\n\n` +
+    `Use /wallet to manage remaining wallets.`
+  );
+});
+
+bot.callbackQuery("cancel_delete_wallet", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.reply("Cancelled. No wallet was deleted.");
 });
 
 bot.callbackQuery("cmd_top_pools", async (ctx) => {
