@@ -90,10 +90,12 @@ bot.command("help", async (ctx) => {
       `/start — Main menu\n` +
       `/wallet — Wallet management\n` +
       `/balance — Check ETH balance of active wallet\n` +
+      `/renamewallet <index> <name> — Rename a wallet\n` +
       `/lp — Add/manage liquidity\n` +
       `/positions — View open LP positions\n` +
       `/nft — Mint NFTs\n` +
       `/market — Top pools & token data\n` +
+      `/login <code> — Login to web dashboard\n` +
       `/settings — Bot settings\n` +
       `/cancel — Cancel current action\n` +
       `/help — This message\n\n` +
@@ -101,6 +103,40 @@ bot.command("help", async (ctx) => {
       `Explorer: https://robinhoodchain.blockscout.com\n\n` +
       `Tip: You can type /cancel at any time during a multi-step action to abort it.`
   );
+});
+
+// ── /renamewallet — rename a wallet by index and new name ─────────────────────
+// Usage: /renamewallet 1 My Main Wallet
+bot.command("renamewallet", async (ctx) => {
+  const telegramId = BigInt(ctx.from!.id);
+  const user = await db.query.users.findFirst({ where: eq(users.telegramId, telegramId) });
+  if (!user) { await ctx.reply("No account found. Use /start first."); return; }
+
+  const args = ctx.match?.trim() ?? "";
+  const spaceIdx = args.indexOf(" ");
+  if (!args || spaceIdx === -1) {
+    await ctx.reply("Usage: /renamewallet <index> <new name>\n\nExample: /renamewallet 1 Main Wallet\n\nUse /wallet to see your wallet list with indices.");
+    return;
+  }
+
+  const indexStr = args.slice(0, spaceIdx);
+  const newName = args.slice(spaceIdx + 1).trim().slice(0, 32);
+  const index = parseInt(indexStr, 10);
+
+  if (isNaN(index) || index < 1) { await ctx.reply("Wallet index must be a positive number."); return; }
+  if (!newName) { await ctx.reply("New name cannot be empty."); return; }
+
+  const userWallets = await db.query.wallets.findMany({
+    where: eq(wallets.userId, user.id),
+    orderBy: (t, { asc }) => [asc(t.id)],
+  });
+
+  const wallet = userWallets[index - 1];
+  if (!wallet) { await ctx.reply(`No wallet at index ${index}. You have ${userWallets.length} wallet(s).`); return; }
+
+  const oldName = wallet.name;
+  await db.update(wallets).set({ name: newName }).where(eq(wallets.id, wallet.id));
+  await ctx.reply(`Wallet renamed.\n\n"${oldName}" -> "${newName}"\nAddress: ${wallet.address}\n\nChanges sync automatically to the web dashboard.`);
 });
 
 // ── /balance ───────────────────────────────────────────────────────────────────

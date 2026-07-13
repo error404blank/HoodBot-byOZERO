@@ -1,5 +1,5 @@
 import { createPublicClient, createWalletClient, http, defineChain } from "viem";
-import { mainnet, base } from "viem/chains";
+import { mainnet, base, sepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 
 // ─── Robinhood Chain mainnet ───────────────────────────────────────────────────
@@ -43,6 +43,15 @@ export const SUPPORTED_MINT_CHAINS = [
     defaultRpc: "https://mainnet.base.org",
     explorer: "https://basescan.org",
     viemChain: base,
+  },
+  {
+    id: 11155111,
+    name: "Sepolia (Testnet)",
+    symbol: "ETH",
+    slug: "sepolia",
+    defaultRpc: "https://rpc.sepolia.org",
+    explorer: "https://sepolia.etherscan.io",
+    viemChain: sepolia,
   },
 ] as const;
 

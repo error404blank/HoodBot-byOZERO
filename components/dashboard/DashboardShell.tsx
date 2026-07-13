@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { LoginScreen } from "./LoginScreen";
 import { Sidebar, type TabId } from "./Sidebar";
 import { HomeTab } from "./tabs/HomeTab";
+import { useLang } from "@/lib/useLang";
 
 // Lazy imports for tabs — loaded inline to keep bundle splits minimal
 import dynamic from "next/dynamic";
@@ -24,6 +25,9 @@ const PositionsTab = dynamic(() => import("./tabs/PositionsTab").then((m) => ({ 
   loading: () => <TabSkeleton />,
 });
 const SettingsTab = dynamic(() => import("./tabs/SettingsTab").then((m) => ({ default: m.SettingsTab })), {
+  loading: () => <TabSkeleton />,
+});
+const TokenCheckTab = dynamic(() => import("./tabs/TokenCheckTab").then((m) => ({ default: m.TokenCheckTab })), {
   loading: () => <TabSkeleton />,
 });
 
@@ -48,6 +52,7 @@ export function DashboardShell() {
   const [authChecked, setAuthChecked] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("home");
+  const { tr } = useLang();
 
   // Check session on mount
   useEffect(() => {
@@ -96,18 +101,24 @@ export function DashboardShell() {
 
   function renderTab() {
     switch (activeTab) {
-      case "home":       return <HomeTab />;
-      case "wallets":    return <WalletsTab />;
-      case "nfthood":    return <NftHoodTab />;
-      case "send":       return <SendTab />;
-      case "rpcs":       return <RpcsTab />;
-      case "positions":  return <PositionsTab />;
-      case "settings":   return <SettingsTab user={user!} onLogout={handleLogout} />;
-      default:           return <HomeTab />;
+      case "home":        return <HomeTab />;
+      case "wallets":     return <WalletsTab />;
+      case "nfthood":     return <NftHoodTab />;
+      case "send":        return <SendTab />;
+      case "rpcs":        return <RpcsTab />;
+      case "positions":   return <PositionsTab />;
+      case "tokencheck":  return <TokenCheckTab />;
+      case "settings":    return <SettingsTab user={user!} onLogout={handleLogout} />;
+      default:            return <HomeTab />;
     }
   }
 
-  const tabLabel = activeTab === "nfthood" ? "NFTHood" : activeTab.charAt(0).toUpperCase() + activeTab.slice(1);
+  // Use translated label for the active tab
+  const TAB_LABEL_KEYS: Record<TabId, keyof typeof tr> = {
+    home: "home", wallets: "wallets", nfthood: "nfthood", send: "send",
+    rpcs: "rpcs", positions: "positions", tokencheck: "tokencheck", settings: "settings",
+  };
+  const tabLabel = tr[TAB_LABEL_KEYS[activeTab]] as string;
 
   return (
     <div className="flex min-h-dvh bg-background">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { SUPPORTED_MINT_CHAINS } from "@/src/services/chain";
+import { useLang } from "@/lib/useLang";
 
 interface WalletRow {
   id: number;
@@ -31,6 +32,7 @@ export function NftHoodTab() {
   const [quantity, setQuantity] = useState(1);
   const [pin, setPin] = useState("");
   const [dryRun, setDryRun] = useState(true);
+  const { tr } = useLang();
 
   const [status, setStatus] = useState<MintStatus>("idle");
   const [result, setResult] = useState<{
@@ -95,39 +97,47 @@ export function NftHoodTab() {
     <div className="p-4 md:p-6 space-y-6 max-w-2xl">
       <div>
         <h2 className="text-base font-mono font-bold text-foreground">NFTHood</h2>
-        <p className="text-xs font-mono text-muted-foreground mt-0.5">Mint NFT di Ethereum, Robinhood Chain, atau Base.</p>
+        <p className="text-xs font-mono text-muted-foreground mt-0.5">Mint NFT on Ethereum, Robinhood Chain, Base, or Sepolia (testnet).</p>
       </div>
 
       {/* Mint form */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-4">
-        <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground">Mint NFT</p>
+        <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground">{tr.mint} NFT</p>
 
         {/* Network */}
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-muted-foreground">
-            Network <span className="text-destructive">*</span>
+            {tr.network} <span className="text-destructive">*</span>
           </label>
-          <div className="grid grid-cols-3 gap-2">
-            {SUPPORTED_MINT_CHAINS.map((c) => (
-              <button
-                key={c.slug}
-                onClick={() => setChain(c.slug)}
-                className={`py-2 px-2 rounded border text-xs font-mono transition-colors text-center ${
-                  chain === c.slug
-                    ? "border-primary/50 bg-primary/15 text-primary"
-                    : "border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
-                }`}
-              >
-                {c.name}
-              </button>
-            ))}
+          <div className="grid grid-cols-2 gap-2">
+            {SUPPORTED_MINT_CHAINS.map((c) => {
+              const isTestnet = c.slug === "sepolia";
+              return (
+                <button
+                  key={c.slug}
+                  onClick={() => setChain(c.slug)}
+                  className={`py-2 px-2 rounded border text-xs font-mono transition-colors text-center relative ${
+                    chain === c.slug
+                      ? "border-primary/50 bg-primary/15 text-primary"
+                      : "border-border text-muted-foreground hover:border-primary/30 hover:text-foreground"
+                  }`}
+                >
+                  <span>{c.name}</span>
+                  {isTestnet && (
+                    <span className="ml-1.5 text-[9px] font-mono border border-yellow-500/40 text-yellow-400 bg-yellow-500/10 rounded px-1 py-0.5 align-middle">
+                      TEST
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 
         {/* Wallet */}
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-muted-foreground">
-            Wallet <span className="text-destructive">*</span>
+            {tr.selectWallet} <span className="text-destructive">*</span>
           </label>
           <select
             value={walletId}
@@ -145,7 +155,7 @@ export function NftHoodTab() {
         {/* Contract */}
         <div className="space-y-1.5">
           <label className="text-xs font-mono text-muted-foreground">
-            Contract Address <span className="text-destructive">*</span>
+            {tr.contractAddress} <span className="text-destructive">*</span>
           </label>
           <input
             type="text"
@@ -158,7 +168,7 @@ export function NftHoodTab() {
 
         {/* Quantity */}
         <div className="space-y-1.5">
-          <label className="text-xs font-mono text-muted-foreground">Quantity</label>
+          <label className="text-xs font-mono text-muted-foreground">{tr.quantity}</label>
           <div className="flex items-center gap-2">
             <button
               onClick={() => setQuantity(Math.max(1, quantity - 1))}

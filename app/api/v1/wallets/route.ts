@@ -1,12 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireApiKey } from "@/lib/apiAuth";
+import { getSessionUser } from "@/lib/session";
 import { db } from "@/src/db";
 import { wallets, users } from "@/src/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { getPublicClient } from "@/src/services/chain";
 import { formatUnits } from "viem";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * PATCH /api/v1/wallets  { walletId: number, name: string }
+ * Rename a wallet — session auth required.
+ */
+export async function PATCH(req: NextRequest) {
+  const sessionUser = await getSessionUser(req);
+  if (!sessionUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: { walletId?: number; name?: string };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+
+  const { walletId, name } = body;
+  if (!walletId || !name?.trim()) {
+    return NextResponse.json({ error: "walletId and name required" }, { status: 400 });
+  }
+
+  const trimmed = name.trim().slice(0, 32);
+
+  // Ensure wallet belongs to this user
+  const wallet = await db.query.wallets.findFirst({
+    where: and(eq(wallets.id, walletId), eq(wallets.userId, sessionUser.id)),
+  });
+  if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
+
+  await db.update(wallets).set({ name: trimmed }).where(eq(wallets.id, walletId));
+  return NextResponse.json({ ok: true, name: trimmed });
+}
 
 /**
  * GET /api/v1/wallets?telegramId=<id>

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { SUPPORTED_MINT_CHAINS } from "@/src/services/chain";
+import { useLang } from "@/lib/useLang";
 
 interface WalletRow {
   id: number;
@@ -33,6 +34,7 @@ export function SendTab() {
       });
   }, []);
 
+  const { tr } = useLang();
   const selectedWallet = wallets.find((w) => String(w.id) === walletId);
   const selectedChain = SUPPORTED_MINT_CHAINS.find((c) => c.slug === chain) ?? SUPPORTED_MINT_CHAINS[1];
 
@@ -64,14 +66,14 @@ export function SendTab() {
   return (
     <div className="p-4 md:p-6 space-y-5 max-w-xl">
       <div>
-        <h2 className="text-base font-mono font-bold text-foreground">Send</h2>
-        <p className="text-xs font-mono text-muted-foreground mt-0.5">Kirim ETH dari wallet ke alamat tujuan.</p>
+        <h2 className="text-base font-mono font-bold text-foreground">{tr.sendTitle}</h2>
+        <p className="text-xs font-mono text-muted-foreground mt-0.5">Send ETH from a wallet to any address.</p>
       </div>
 
       {/* Network */}
       <div className="space-y-1.5">
         <label className="text-xs font-mono text-muted-foreground uppercase tracking-widest">
-          Network <span className="text-destructive">*</span>
+          {tr.network} <span className="text-destructive">*</span>
         </label>
         <select
           value={chain}
@@ -79,7 +81,9 @@ export function SendTab() {
           className="w-full bg-card border border-border rounded px-3 py-2.5 text-sm font-mono text-foreground focus:outline-none focus:border-primary/50"
         >
           {SUPPORTED_MINT_CHAINS.map((c) => (
-            <option key={c.slug} value={c.slug}>{c.name}</option>
+            <option key={c.slug} value={c.slug}>
+              {c.name}{c.slug === "sepolia" ? " [TESTNET]" : ""}
+            </option>
           ))}
         </select>
       </div>
