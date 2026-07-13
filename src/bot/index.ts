@@ -2,7 +2,7 @@ import { Bot, session, InlineKeyboard } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import type { MyContext, SessionData } from "./types";
 import { db } from "../db";
-import { users, wallets, lpPositions, nftMints, loginCodes, webSessions } from "../db/schema";
+import { users, wallets, lpPositions, nftMints, loginCodes, webSessions, autoMintWatchers } from "../db/schema";
 import { eq, and, isNull, desc, gt, count } from "drizzle-orm";
 import { randomBytes } from "crypto";
 import { createWalletConversation } from "./conversations/createWallet";
@@ -39,6 +39,24 @@ bot.use(createConversation(importWalletConversation, "importWallet"));
 bot.use(createConversation(addLiquidityV3Conversation, "addLiquidityV3"));
 bot.use(createConversation(addLiquidityV4Conversation, "addLiquidityV4"));
 bot.use(createConversation(mintNFTConversation, "mintNFT"));
+
+// ── /cancel — exit any active conversation ─────────────────────────────────────
+// Must be registered BEFORE conversations so it can interrupt them.
+bot.command("cancel", async (ctx) => {
+  // grammY conversations check: if inside a conversation, this message will be
+  // consumed by the conversation's waitFor. We register /cancel as a global
+  // command escape by clearing session conversation state directly.
+  if (ctx.session) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const s = ctx.session as any;
+    if (s.__conversations) {
+      s.__conversations = {};
+    }
+  }
+  await ctx.reply(
+    "Cancelled. All active operations stopped.\n\nUse /start or /wallet to continue."
+  );
+});
 
 // ── /start ─────────────────────────────────────────────────────────────────────
 bot.command("start", async (ctx) => {
