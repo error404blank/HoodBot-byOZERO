@@ -271,10 +271,22 @@ export async function checkAllowlist(
 // ─── Simulate mint (dry-run) ──────────────────────────────────────────────────
 export interface SimulateResult {
   success: boolean;
-  gasEstimate: string;
+  gasEstimate: string;      // raw gas units
+  gasWithBuffer: string;    // +20% safe buffer for L2/Orbit
   errorMessage?: string;
   errorType?: "fatal" | "retryable";
+  detectedFn?: string;      // which function signature worked
 }
+
+// All mint function selectors we try — ordered by prevalence
+const SIM_ATTEMPTS = [
+  { fn: "mint",        args: (qty: bigint, _from: `0x${string}`) => [qty]        },
+  { fn: "publicMint",  args: (qty: bigint, _from: `0x${string}`) => [qty]        },
+  { fn: "mintPublic",  args: (qty: bigint, _from: `0x${string}`) => [qty]        },
+  { fn: "mint",        args: (qty: bigint,  from: `0x${string}`) => [from, qty]  },
+  { fn: "safeMint",    args: (_qty: bigint, from: `0x${string}`) => [from]       },
+  { fn: "mintTo",      args: (qty: bigint,  from: `0x${string}`) => [from, qty]  },
+] as const;
 
 export async function simulateMint(
   contractAddress: string,
@@ -289,63 +301,61 @@ export async function simulateMint(
   const addr = contractAddress as `0x${string}`;
   const from = walletAddress as `0x${string}`;
   const totalValue = mintPriceWei * BigInt(quantity);
-
-  // Try each mint function signature and simulate
-  const attempts = [
-    { fn: "mint", args: [BigInt(quantity)] },
-    { fn: "publicMint", args: [BigInt(quantity)] },
-    { fn: "mintPublic", args: [BigInt(quantity)] },
-    { fn: "mint", args: [from, BigInt(quantity)] },
-  ] as const;
+  const qty = BigInt(quantity);
 
   let lastMsg = "";
 
-  for (const attempt of attempts) {
+  for (const attempt of SIM_ATTEMPTS) {
     try {
       const gas = await publicClient.estimateContractGas({
         address: addr,
         abi: MINT_ABI,
-        functionName: attempt.fn as "mint" | "publicMint" | "mintPublic",
+        functionName: attempt.fn as "mint" | "publicMint" | "mintPublic" | "safeMint" | "mintTo",
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        args: attempt.args as any,
+        args: attempt.args(qty, from) as any,
         account: from,
         value: totalValue,
       });
-      return { success: true, gasEstimate: gas.toString() };
+      const gasWithBuffer = BigInt(Math.ceil(Number(gas) * 1.25));
+      return {
+        success: true,
+        gasEstimate: gas.toString(),
+        gasWithBuffer: gasWithBuffer.toString(),
+        detectedFn: `${attempt.fn}(${attempt.args(qty, from).map(String).join(", ")})`,
+      };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       lastMsg = msg;
 
-      // Fatal errors — stop immediately, no point trying more signatures
+      // Fatal errors — insufficient funds / supply exceeded / wrong payment — stop immediately
       const errorType = classifyMintError(msg);
       if (errorType === "fatal") {
-        return { success: false, gasEstimate: "0", errorMessage: msg, errorType: "fatal" };
+        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg, errorType: "fatal" };
       }
 
-      // "Function not found" errors — try next signature silently
+      // ABI / selector mismatch — try next signature
       const isMissingFn =
-        msg.includes("is not a function") ||
-        msg.includes("does not exist") ||
+        msg.includes("does not exist on the contract") ||
         msg.includes("ContractFunctionExecutionError") ||
-        msg.includes("execution reverted") ||
-        msg.includes("selector not found") ||
+        msg.includes("Function") ||
+        msg.includes("selector") ||
+        msg.includes("reverted") ||
         msg.includes("UNPREDICTABLE_GAS_LIMIT");
 
       if (!isMissingFn) {
-        // Unexpected error — return immediately
-        return { success: false, gasEstimate: "0", errorMessage: msg, errorType: "retryable" };
+        // Non-ABI error (network/RPC) — surface immediately
+        return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg, errorType: "retryable" };
       }
-      // otherwise continue to next signature
     }
   }
 
-  // All signatures tried — return a helpful message
   return {
     success: false,
     gasEstimate: "0",
+    gasWithBuffer: "0",
     errorMessage: lastMsg
-      ? `Simulation failed: ${lastMsg.slice(0, 120)}`
-      : "Could not detect a valid mint function on this contract. It may use a custom signature or not be a mintable contract.",
+      ? `Simulation failed: ${lastMsg.slice(0, 160)}`
+      : "No compatible mint function found. The contract may use a custom ABI or is not yet mintable.",
     errorType: "retryable",
   };
 }

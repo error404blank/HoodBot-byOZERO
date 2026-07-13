@@ -73,6 +73,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── simulate (dry-run) ───────────────────────────────────────────────────────
+  // Runs detect + simulate in parallel. Does NOT require private key or PIN.
   if (action === "simulate") {
     const quantity = Number(body.quantity ?? 1);
     const walletAddress = body.walletAddress as string;
@@ -80,9 +81,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "walletAddress required for simulate" }, { status: 400 });
     }
     try {
-      const info = await detectNftContract(contractAddress, chainSlug);
-      const sim = await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress, chainSlug);
-      return NextResponse.json(sim);
+      // Detect and simulate in parallel — faster UX
+      const [info, sim] = await Promise.all([
+        detectNftContract(contractAddress, chainSlug),
+        // Use a placeholder price first; will re-estimate after detect
+        simulateMint(contractAddress, quantity, 0n, walletAddress, chainSlug),
+      ]);
+      // Re-run simulate with real price if first attempt failed due to wrong value
+      const finalSim = sim.success
+        ? sim
+        : await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress, chainSlug);
+
+      return NextResponse.json({
+        ...finalSim,
+        contractName: info.name,
+        mintPrice: info.mintPrice,
+        phase: info.phase,
+        standard: info.standard,
+      });
     } catch (err) {
       return NextResponse.json({ error: String(err) }, { status: 500 });
     }
@@ -117,6 +133,48 @@ export async function POST(req: NextRequest) {
 
     if (!walletId) {
       return NextResponse.json({ error: "walletId is required for mint" }, { status: 400 });
+    }
+
+    // Require session auth for web-initiated mints
+    const sessionUser = await getSessionUser(req);
+    if (!sessionUser) {
+      return NextResponse.json({ error: "Not authenticated. Please log in to the dashboard first." }, { status: 401 });
+    }
+
+    const wallet = await db.query.wallets.findFirst({
+      where: eq(wallets.id, walletId),
+    });
+    if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
+
+    // Ensure session user owns this wallet
+    if (wallet.userId !== sessionUser.id) {
+      return NextResponse.json({ error: "Wallet does not belong to your account" }, { status: 403 });
+    }
+
+    // Look up user for telegramId — needed as fallback to decrypt bot-created wallets
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, wallet.userId),
+    });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    let privateKey: `0x${string}`;
+    try {
+      // Strategy 1: server-encrypted wallet (salt starts with "server:") — no PIN needed
+      // Strategy 2: legacy bot wallet — try telegramId as the "PIN" (bots use telegramId-based keys)
+      // Strategy 3: if both fail, ask user to re-import
+      const raw = await decryptPrivateKeyAuto(
+        wallet.encryptedPrivateKey,
+        wallet.encryptedIv,
+        wallet.salt,
+        user.telegramId.toString(),   // telegramId used as PIN for legacy bot wallets
+        user.telegramId.toString()    // telegramId
+      );
+      privateKey = raw as `0x${string}`;
+    } catch {
+      return NextResponse.json(
+        { error: "Could not decrypt wallet. Please re-import this wallet from the dashboard (Settings > Wallets > Import)." },
+        { status: 403 }
+      );
     }
 
     // Require session auth for web-initiated mints
