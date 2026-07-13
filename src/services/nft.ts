@@ -77,26 +77,62 @@ export interface DetectedMintFn {
   inputs: Array<{ type: string; name?: string }>;
   signature: string; // e.g. "mint(uint256)"
   payable: boolean;
+  requiresProof?: boolean; // true if takes bytes32/bytes (merkle proof, allowlist sig)
 }
 
 export function detectMintFunctionsFromAbi(abi: Abi): DetectedMintFn[] {
+  // Keywords that indicate a public mint function
   const mintKeywords = ["mint", "claim", "purchase", "buy"];
+
+  // Prefixes/patterns that indicate ADMIN/OWNER-ONLY functions — exclude these
+  // even if they contain a mint keyword in their name
+  const adminPrefixes = [
+    "set",        // setMintOpen, setMintSigner, setMintPrice, setPublicMint
+    "owner",      // ownerMint
+    "admin",      // adminMint
+    "team",       // teamMint
+    "dev",        // devMint
+    "withdraw",   // withdrawMint (rare but exists)
+    "toggle",     // toggleMinting
+    "pause",      // pauseMinting
+    "unpause",    // unpauseMinting
+    "enable",     // enableMinting
+    "disable",    // disableMinting
+    "update",     // updateMintPrice
+  ];
+
   const results: DetectedMintFn[] = [];
 
   for (const item of abi) {
     if (item.type !== "function") continue;
-    const name = item.name.toLowerCase();
-    if (!mintKeywords.some((kw) => name.includes(kw))) continue;
+    const name = item.name;
+    const nameLower = name.toLowerCase();
+
+    // Must contain a mint keyword
+    if (!mintKeywords.some((kw) => nameLower.includes(kw))) continue;
+
     // Skip view/pure functions
     if (item.stateMutability === "view" || item.stateMutability === "pure") continue;
 
+    // Skip admin/setter functions
+    if (adminPrefixes.some((prefix) => nameLower.startsWith(prefix))) continue;
+
+    // Skip functions that take a bool — almost always a toggle/setter
     const inputs = item.inputs ?? [];
-    const sig = `${item.name}(${inputs.map((i) => i.type).join(",")})`;
+    if (inputs.some((i) => i.type === "bool")) continue;
+
+    // Skip functions that take bytes32 or bytes (merkle proofs / signatures) — 
+    // these are allowlist mints that require off-chain data we can't generate
+    // Still include them but mark differently — user may have the proof
+    const hasCryptoArgs = inputs.some((i) => i.type === "bytes32" || i.type === "bytes" || i.type === "bytes32[]");
+
+    const sig = `${name}(${inputs.map((i) => i.type).join(",")})`;
     results.push({
-      name: item.name,
+      name,
       inputs: inputs.map((i) => ({ type: i.type, name: i.name ?? "" })),
       signature: sig,
       payable: item.stateMutability === "payable",
+      requiresProof: hasCryptoArgs,
     });
   }
 

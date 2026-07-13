@@ -23,6 +23,7 @@ interface MintFnInfo {
   signature: string;
   payable: boolean;
   inputs: Array<{ type: string; name?: string }>;
+  requiresProof?: boolean;
 }
 
 interface ContractCard {
@@ -128,8 +129,11 @@ export function NftHoodTab() {
         });
         // Auto-select the chain the contract was found on
         if (data.detectedChain) setChain(data.detectedChain);
-        // Auto-pick the first detected function as default
-        if (data.mintFunctions?.[0]) setOverrideFn(data.mintFunctions[0].signature);
+        // Auto-pick first non-proof function (avoid allowlist-only functions as default)
+        if (data.mintFunctions?.length > 0) {
+          const best = data.mintFunctions.find((f: MintFnInfo) => !f.requiresProof) ?? data.mintFunctions[0];
+          setOverrideFn(best.signature);
+        }
       }
     } catch (e) {
       setDetectStatus("error");
@@ -320,6 +324,16 @@ export function NftHoodTab() {
               )}
             </div>
 
+            {/* Paused warning */}
+            {contractCard.phase === "paused" && (
+              <div className="flex items-start gap-1.5 bg-yellow-500/10 border border-yellow-500/30 rounded px-2 py-1.5 mt-1">
+                <span className="text-yellow-400 text-[10px] font-mono leading-relaxed">
+                  Mint is currently <strong>Paused</strong> — simulate will fail until the owner opens mint.
+                  You can still simulate to test the function signature.
+                </span>
+              </div>
+            )}
+
             {/* Detected mint functions — user can override */}
             {contractCard.mintFunctions.length > 0 && (
               <div className="space-y-1.5 pt-1">
@@ -336,10 +350,20 @@ export function NftHoodTab() {
                       }`}
                     >
                       {fn.signature}
-                      {fn.payable && <span className="ml-1 opacity-50">payable</span>}
+                      {fn.requiresProof && (
+                        <span className="ml-1 text-yellow-400/70" title="Requires merkle proof or allowlist signature">proof</span>
+                      )}
+                      {fn.payable && !fn.requiresProof && (
+                        <span className="ml-1 opacity-40">payable</span>
+                      )}
                     </button>
                   ))}
                 </div>
+                {contractCard.mintFunctions.every((f) => f.requiresProof) && (
+                  <p className="text-[10px] font-mono text-yellow-400/80">
+                    All detected functions require a merkle proof or allowlist signature — this may be an allowlist-only mint.
+                  </p>
+                )}
               </div>
             )}
 
