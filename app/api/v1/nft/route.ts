@@ -180,19 +180,27 @@ export async function POST(req: NextRequest) {
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
     let privateKey: `0x${string}`;
-    try {
-      // Server wallets use WALLET_SECRET (no PIN). Legacy bot wallets use telegramId as the PIN.
-      const raw = await decryptPrivateKeyAuto(
-        wallet.encryptedPrivateKey,
-        wallet.encryptedIv,
-        wallet.salt,
-        user.telegramId.toString(),  // telegramId as PIN fallback for bot wallets
-        user.telegramId.toString()   // telegramId param
-      );
-      privateKey = raw as `0x${string}`;
-    } catch {
+
+    if (wallet.salt.startsWith("server:")) {
+      // ── Web wallet (server-encrypted) — no PIN needed ──────────────────────
+      try {
+        const raw = await decryptPrivateKeyAuto(wallet.encryptedPrivateKey, wallet.encryptedIv, wallet.salt);
+        privateKey = raw as `0x${string}`;
+      } catch (e) {
+        return NextResponse.json(
+          { error: "Could not decrypt wallet. The server key may have changed — please re-import via Settings > Wallets." },
+          { status: 403 }
+        );
+      }
+    } else {
+      // ── Legacy bot wallet — encrypted with user's 6-digit PIN ─────────────
+      // We cannot decrypt this without the user's PIN. The user must re-import
+      // this wallet from the dashboard which will re-encrypt it with WALLET_SECRET.
       return NextResponse.json(
-        { error: "Could not decrypt wallet. Please re-import this wallet from the dashboard (Settings > Wallets > Import)." },
+        {
+          error: "This wallet was created by the Telegram bot and is PIN-protected. To use it here, please re-import it: go to Settings → Wallets → Import Wallet, paste your private key or mnemonic, and it will be re-encrypted for dashboard use.",
+          code: "LEGACY_PIN_WALLET",
+        },
         { status: 403 }
       );
     }

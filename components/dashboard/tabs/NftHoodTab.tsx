@@ -205,13 +205,27 @@ export function NftHoodTab() {
         sniperTimeoutMs: sniperTimeout * 1000,
       }),
     });
-    const data = await res.json() as { txHash?: string; gasUsed?: string; error?: string };
-    if (data.error) { setMintStatus("error"); } else {
+    const data = await res.json() as {
+      txHash?: string; gasUsed?: string; error?: string;
+      code?: string;
+    };
+    if (data.error) {
+      setMintStatus("error");
+      // Surface a cleaner message for legacy bot wallet PIN issue
+      if (data.code === "LEGACY_PIN_WALLET") {
+        setMintResult({
+          ...data,
+          error: "Wallet ini dibuat oleh Telegram bot dan dilindungi PIN. Untuk menggunakannya di sini, silakan re-import via Settings \u2192 Wallets \u2192 Import Wallet (paste private key atau mnemonic).",
+        });
+      } else {
+        setMintResult(data);
+      }
+    } else {
       setMintStatus("success");
+      setMintResult(data);
       fetch("/api/v1/nft-history").then((r) => r.json())
         .then((d) => setHistory((d as { mints: MintHistory[] }).mints ?? []));
     }
-    setMintResult(data);
   }
 
   return (
