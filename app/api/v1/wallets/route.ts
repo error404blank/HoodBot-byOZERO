@@ -3,7 +3,7 @@ import { requireApiKey } from "@/lib/apiAuth";
 import { getSessionUser } from "@/lib/session";
 import { db } from "@/src/db";
 import { wallets, users } from "@/src/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, count } from "drizzle-orm";
 import { getPublicClient } from "@/src/services/chain";
 import { formatUnits } from "viem";
 
@@ -35,6 +35,43 @@ export async function PATCH(req: NextRequest) {
 
   await db.update(wallets).set({ name: trimmed }).where(eq(wallets.id, walletId));
   return NextResponse.json({ ok: true, name: trimmed });
+}
+
+/**
+ * DELETE /api/v1/wallets  { walletId: number }
+ * Delete a wallet — session auth required. Cannot delete the last wallet.
+ */
+export async function DELETE(req: NextRequest) {
+  const sessionUser = await getSessionUser(req);
+  if (!sessionUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: { walletId?: number };
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
+
+  const { walletId } = body;
+  if (!walletId) return NextResponse.json({ error: "walletId required" }, { status: 400 });
+
+  // Ensure wallet belongs to this user
+  const wallet = await db.query.wallets.findFirst({
+    where: and(eq(wallets.id, walletId), eq(wallets.userId, sessionUser.id)),
+  });
+  if (!wallet) return NextResponse.json({ error: "Wallet not found" }, { status: 404 });
+
+  // Prevent deleting last wallet
+  const [{ value: total }] = await db
+    .select({ value: count() })
+    .from(wallets)
+    .where(eq(wallets.userId, sessionUser.id));
+
+  if (total <= 1) {
+    return NextResponse.json(
+      { error: "Cannot delete your only wallet. Generate or import another wallet first." },
+      { status: 400 }
+    );
+  }
+
+  await db.delete(wallets).where(eq(wallets.id, walletId));
+  return NextResponse.json({ ok: true });
 }
 
 /**
