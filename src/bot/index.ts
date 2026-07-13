@@ -524,8 +524,8 @@ bot.command("login", async (ctx) => {
   if (!user) {
     const [newUser] = await db.insert(users).values({
       telegramId: BigInt(telegramId),
-      username: ctx.from.username ?? null,
-      firstName: ctx.from.first_name ?? null,
+      username: ctx.from?.username ?? null,
+      firstName: ctx.from?.first_name ?? null,
     }).returning();
     user = newUser;
   }
@@ -540,9 +540,10 @@ bot.command("login", async (ctx) => {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await db.insert(webSessions).values({ token, userId: user.id, expiresAt });
 
+  const displayName = ctx.from?.first_name ?? ctx.from?.username ?? "User";
   await ctx.reply(
     `Login confirmed! Go back to the dashboard — it will log you in automatically.\n\n` +
-    `Logged in as: ${ctx.from.first_name ?? ctx.from.username ?? "User"}\n` +
+    `Logged in as: ${displayName}\n` +
     `Session valid for 7 days.`
   );
 });

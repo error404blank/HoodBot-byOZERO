@@ -98,7 +98,7 @@ export function RpcsTab() {
               <select
                 value={chainId}
                 onChange={(e) => {
-                  const id = Number(e.target.value);
+                  const id = Number(e.target.value) as 1 | 4663 | 8453;
                   setChainId(id);
                   const c = CHAIN_OPTIONS.find((x) => x.id === id);
                   if (c) setUrl(c.defaultUrl);

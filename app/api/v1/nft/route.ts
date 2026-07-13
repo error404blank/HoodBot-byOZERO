@@ -10,6 +10,8 @@ import {
   simulateMint,
   checkAllowlist,
 } from "@/src/services/nft";
+import { type MintChainSlug, SUPPORTED_MINT_CHAINS } from "@/src/services/chain";
+import { getSessionUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -43,15 +45,24 @@ export async function POST(req: NextRequest) {
 
   const action = body.action as string;
   const contractAddress = body.contractAddress as string;
+  const chainSlug = (body.chainSlug as MintChainSlug) ?? "robinhood";
 
   if (!contractAddress) {
     return NextResponse.json({ error: "contractAddress required" }, { status: 400 });
   }
 
+  // Validate chainSlug
+  if (!SUPPORTED_MINT_CHAINS.find((c) => c.slug === chainSlug)) {
+    return NextResponse.json(
+      { error: `Unsupported chain: ${chainSlug}. Supported: ${SUPPORTED_MINT_CHAINS.map((c) => c.slug).join(", ")}` },
+      { status: 400 }
+    );
+  }
+
   // ── detect ──────────────────────────────────────────────────────────────────
   if (action === "detect") {
     try {
-      const info = await detectNftContract(contractAddress);
+      const info = await detectNftContract(contractAddress, chainSlug);
       return NextResponse.json({
         ...info,
         mintPriceWei: info.mintPriceWei.toString(),
@@ -69,8 +80,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "walletAddress required for simulate" }, { status: 400 });
     }
     try {
-      const info = await detectNftContract(contractAddress);
-      const sim = await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress);
+      const info = await detectNftContract(contractAddress, chainSlug);
+      const sim = await simulateMint(contractAddress, quantity, info.mintPriceWei, walletAddress, chainSlug);
       return NextResponse.json(sim);
     } catch (err) {
       return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -138,14 +149,19 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      const info = await detectNftContract(contractAddress);
+      const info = await detectNftContract(contractAddress, chainSlug);
       const result = await mintNft({
         privateKey,
         contractAddress,
         quantity,
         mintPriceWei: info.mintPriceWei,
         recipientAddress: wallet.address,
+        chainSlug,
       });
+
+      // Get chain explorer URL
+      const chain = SUPPORTED_MINT_CHAINS.find((c) => c.slug === chainSlug) ?? SUPPORTED_MINT_CHAINS[1];
+      const explorerUrl = `${chain.explorer}/tx/${result.txHash}`;
 
       await db.insert(nftMints).values({
         userId: user.id,
@@ -161,7 +177,8 @@ export async function POST(req: NextRequest) {
         txHash: result.txHash,
         gasUsed: result.gasUsed,
         contractAddress,
-        explorerUrl: `https://robinhoodchain.blockscout.com/tx/${result.txHash}`,
+        chain: chain.name,
+        explorerUrl,
       });
     } catch (err) {
       console.error("[HoodBot API] mint error:", err);
