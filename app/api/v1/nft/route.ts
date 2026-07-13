@@ -215,6 +215,7 @@ export async function POST(req: NextRequest) {
         recipientAddress: wallet.address,
         chainSlug,
         detectedFn: body.detectedFn as string | undefined,
+        mintFunctions: info.mintFunctions,
         gasPreset,
         maxFeePerGasGwei: body.maxFeePerGasGwei as number | undefined,
         maxPriorityFeePerGasGwei: body.maxPriorityFeePerGasGwei as number | undefined,

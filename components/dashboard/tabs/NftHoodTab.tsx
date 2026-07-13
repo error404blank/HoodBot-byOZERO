@@ -24,6 +24,7 @@ interface MintFnInfo {
   payable: boolean;
   inputs: Array<{ type: string; name?: string }>;
   requiresProof?: boolean;
+  mintType?: "open" | "signature" | "merkle" | "token-gated";
 }
 
 interface ContractCard {
@@ -84,6 +85,7 @@ export function NftHoodTab() {
   const [mintResult, setMintResult] = useState<{
     txHash?: string; gasEstimate?: string; gasWithBuffer?: string;
     detectedFn?: string; abiSource?: string; error?: string;
+    mintType?: string; ticketSource?: string; needsTicket?: boolean; code?: string;
   } | null>(null);
 
   // Derived — the currently selected chain object
@@ -170,10 +172,16 @@ export function NftHoodTab() {
       const data = await res.json() as {
         success?: boolean; gasEstimate?: string; gasWithBuffer?: string;
         detectedFn?: string; errorMessage?: string; error?: string;
+        mintType?: string; ticketSource?: string; needsTicket?: boolean;
+        abiSource?: string;
       };
       if (data.success === false || data.error) {
         setMintStatus("error");
-        setMintResult({ error: data.errorMessage ?? data.error ?? "Simulation failed" });
+        setMintResult({
+          error: data.errorMessage ?? data.error ?? "Simulation failed",
+          mintType: data.mintType,
+          needsTicket: data.needsTicket,
+        });
       } else {
         setMintStatus("success");
         setMintResult({
@@ -181,8 +189,9 @@ export function NftHoodTab() {
           gasWithBuffer: data.gasWithBuffer,
           detectedFn: data.detectedFn,
           abiSource: data.abiSource,
+          mintType: data.mintType,
+          ticketSource: data.ticketSource,
         });
-        // Update the override to the function that actually worked
         if (data.detectedFn) setOverrideFn(data.detectedFn);
       }
       return;
@@ -350,18 +359,31 @@ export function NftHoodTab() {
                       }`}
                     >
                       {fn.signature}
-                      {fn.requiresProof && (
-                        <span className="ml-1 text-yellow-400/70" title="Requires merkle proof or allowlist signature">proof</span>
+                      {fn.mintType === "signature" && (
+                        <span className="ml-1 text-blue-400/80" title="Server-signed ticket — fetched automatically">ticket</span>
                       )}
-                      {fn.payable && !fn.requiresProof && (
+                      {fn.mintType === "merkle" && (
+                        <span className="ml-1 text-yellow-400/70" title="Requires merkle proof">proof</span>
+                      )}
+                      {fn.payable && fn.mintType === "open" && (
                         <span className="ml-1 opacity-40">payable</span>
                       )}
                     </button>
                   ))}
                 </div>
-                {contractCard.mintFunctions.every((f) => f.requiresProof) && (
+
+                {/* Signature-based notice — shown when selected fn needs a ticket */}
+                {contractCard.mintFunctions.find((f) => f.signature === overrideFn)?.mintType === "signature" && (
+                  <div className="flex items-start gap-1.5 bg-blue-500/10 border border-blue-500/20 rounded px-2 py-1.5">
+                    <span className="text-blue-400 text-[10px] font-mono leading-relaxed">
+                      <strong>Server-signed mint</strong> — bot will automatically request a mint ticket from the project API before executing. No manual input needed.
+                    </span>
+                  </div>
+                )}
+
+                {contractCard.mintFunctions.every((f) => f.mintType === "merkle") && (
                   <p className="text-[10px] font-mono text-yellow-400/80">
-                    All detected functions require a merkle proof or allowlist signature — this may be an allowlist-only mint.
+                    All functions require a merkle proof — this may be an allowlist-only mint.
                   </p>
                 )}
               </div>
@@ -534,7 +556,11 @@ export function NftHoodTab() {
           className="w-full py-3 rounded bg-primary text-primary-foreground text-sm font-mono font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {mintStatus === "simulating" ? "Simulating..." :
-           mintStatus === "minting"    ? "Minting..." :
+           mintStatus === "minting" ? (
+             contractCard?.mintFunctions.find((f) => f.signature === overrideFn)?.mintType === "signature"
+               ? "Fetching ticket + Minting..."
+               : "Minting..."
+           ) :
            dryRun ? `Simulate on ${selectedChain.name}` : `Mint on ${selectedChain.name}`}
         </button>
 
@@ -556,9 +582,19 @@ export function NftHoodTab() {
                 {mintResult.detectedFn && (
                   <p className="text-[10px] font-mono text-muted-foreground/60">
                     Fn: <span className="text-foreground">{mintResult.detectedFn}</span>
+                    {mintResult.mintType && mintResult.mintType !== "open" && (
+                      <span className={`ml-2 ${mintResult.mintType === "signature" ? "text-blue-400/80" : "text-yellow-400/70"}`}>
+                        [{mintResult.mintType}]
+                      </span>
+                    )}
                     {mintResult.abiSource && (
                       <span className="ml-2 opacity-50">({mintResult.abiSource} ABI)</span>
                     )}
+                  </p>
+                )}
+                {mintResult.ticketSource && (
+                  <p className="text-[10px] font-mono text-blue-400/70">
+                    Ticket: <span className="opacity-80">{mintResult.ticketSource}</span>
                   </p>
                 )}
                 {mintResult.txHash && (

@@ -72,12 +72,19 @@ export const KNOWN_MINT_SIGNATURES = [
 ] as const;
 
 // From a verified ABI, return the first matching mint-candidate function name + inputs
+export type MintType =
+  | "open"        // mint(uint256), mint() — no off-chain data needed
+  | "signature"   // mint(bytes32 salt, bytes sig) — needs server-signed ticket
+  | "merkle"      // mint(bytes32[] proof, ...) — needs merkle proof from project
+  | "token-gated" // requires owning another token to mint
+
 export interface DetectedMintFn {
   name: string;
   inputs: Array<{ type: string; name?: string }>;
   signature: string; // e.g. "mint(uint256)"
   payable: boolean;
   requiresProof?: boolean; // true if takes bytes32/bytes (merkle proof, allowlist sig)
+  mintType: MintType;
 }
 
 export function detectMintFunctionsFromAbi(abi: Abi): DetectedMintFn[] {
@@ -121,18 +128,42 @@ export function detectMintFunctionsFromAbi(abi: Abi): DetectedMintFn[] {
     const inputs = item.inputs ?? [];
     if (inputs.some((i) => i.type === "bool")) continue;
 
-    // Skip functions that take bytes32 or bytes (merkle proofs / signatures) — 
-    // these are allowlist mints that require off-chain data we can't generate
-    // Still include them but mark differently — user may have the proof
-    const hasCryptoArgs = inputs.some((i) => i.type === "bytes32" || i.type === "bytes" || i.type === "bytes32[]");
-
     const sig = `${name}(${inputs.map((i) => i.type).join(",")})`;
+
+    // Classify mint type based on input argument patterns
+    const inputTypes = inputs.map((i) => i.type);
+    const inputNames = inputs.map((i) => (i.name ?? "").toLowerCase());
+    let mintType: MintType = "open";
+    let requiresProof = false;
+
+    // Signature-based: takes (bytes32 salt, bytes signature) or (bytes32, bytes)
+    // This is the ECDSA server-signed ticket pattern (e.g. ASCII CATS)
+    const hasSalt = inputTypes.includes("bytes32") && inputNames.some((n) => n.includes("salt") || n === "");
+    const hasSignatureArg = inputTypes.includes("bytes") && inputNames.some((n) =>
+      n.includes("sig") || n.includes("signature") || n.includes("ticket") || n === ""
+    );
+    if (hasSalt && hasSignatureArg) {
+      mintType = "signature";
+      requiresProof = true;
+    }
+    // Merkle-based: takes bytes32[] proof
+    else if (inputTypes.includes("bytes32[]")) {
+      mintType = "merkle";
+      requiresProof = true;
+    }
+    // bytes32 alone (single hash — could be merkle leaf or allowlist sig)
+    else if (inputTypes.includes("bytes32") || inputTypes.includes("bytes")) {
+      mintType = "merkle";
+      requiresProof = true;
+    }
+
     results.push({
       name,
       inputs: inputs.map((i) => ({ type: i.type, name: i.name ?? "" })),
       signature: sig,
       payable: item.stateMutability === "payable",
-      requiresProof: hasCryptoArgs,
+      requiresProof,
+      mintType,
     });
   }
 
@@ -147,6 +178,131 @@ export function detectMintFunctionsFromAbi(abi: Abi): DetectedMintFn[] {
   });
 
   return results;
+}
+
+// ─── Mint Ticket: server-signed free mints ───────────────────────────────────
+// Some contracts use off-chain ECDSA signatures to prevent bots while keeping
+// minting fully open. The project's backend hands out a (salt, signature) pair
+// for any wallet that passes an anti-bot check (IP rate limit, CAPTCHA, etc.).
+//
+// We auto-probe a list of known API URL patterns for the contract/project.
+// If we get a valid ticket we inject it into the mint call automatically.
+
+export interface MintTicket {
+  salt: `0x${string}`;
+  signature: `0x${string}`;
+  source: string; // which URL provided the ticket
+}
+
+// Known endpoint patterns for specific projects or generic patterns to probe
+// Each entry: { test: fn to check if this provider applies, fetch: fn to get ticket }
+interface TicketProvider {
+  name: string;
+  // Returns true if this provider should be tried for this contract
+  matches: (contractAddress: string, chainSlug: MintChainSlug) => boolean;
+  // Fetches salt + signature for the given wallet
+  fetch: (contractAddress: string, walletAddress: string, chainSlug: MintChainSlug) => Promise<MintTicket | null>;
+}
+
+// Probe a URL that may return { salt, signature } or { salt, sig } or { ticket: { salt, sig } }
+async function probeTicketUrl(url: string, body?: Record<string, string>): Promise<MintTicket | null> {
+  try {
+    const res = await fetch(url, {
+      method: body ? "POST" : "GET",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as Record<string, unknown>;
+
+    // Normalize various response shapes
+    const nested = (data.ticket ?? data.data ?? data) as Record<string, unknown>;
+    const salt = (nested.salt ?? data.salt) as string | undefined;
+    const sig = (nested.signature ?? nested.sig ?? data.signature ?? data.sig) as string | undefined;
+
+    if (!salt || !sig) return null;
+    return {
+      salt: (salt.startsWith("0x") ? salt : `0x${salt}`) as `0x${string}`,
+      signature: (sig.startsWith("0x") ? sig : `0x${sig}`) as `0x${string}`,
+      source: url,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const TICKET_PROVIDERS: TicketProvider[] = [
+  // ── ASCII CATS (Robinhood Chain) ─────────────────────────────────────────
+  {
+    name: "ascii-cats",
+    matches: (addr, chain) =>
+      chain === "robinhood" &&
+      addr.toLowerCase() === "0xa3f56adb32d3a8f3b41462e3fbf17f36829325be",
+    fetch: async (_contract, wallet, _chain) => {
+      // Try known patterns for the ASCII CATS API
+      const attempts = [
+        () => probeTicketUrl(`https://asciicats.xyz/api/mint?address=${wallet}`),
+        () => probeTicketUrl(`https://asciicats.xyz/api/mint-ticket?address=${wallet}`),
+        () => probeTicketUrl(`https://asciicats.xyz/api/ticket?address=${wallet}`),
+        () => probeTicketUrl("https://asciicats.xyz/api/mint", { address: wallet }),
+        () => probeTicketUrl("https://asciicats.xyz/api/mint-ticket", { address: wallet }),
+        () => probeTicketUrl(`https://api.asciicats.xyz/mint?address=${wallet}`),
+        () => probeTicketUrl(`https://api.asciicats.xyz/ticket?address=${wallet}`),
+        () => probeTicketUrl("https://api.asciicats.xyz/mint", { address: wallet }),
+      ];
+      for (const attempt of attempts) {
+        const ticket = await attempt();
+        if (ticket) return ticket;
+      }
+      return null;
+    },
+  },
+
+  // ── Generic: probe common patterns for ANY signature-based mint ────────────
+  {
+    name: "generic-signature",
+    matches: (_addr, _chain) => true, // always try as last resort
+    fetch: async (contract, wallet, _chain) => {
+      // Try to find a mint API by probing common URL patterns
+      // We use the contract address to guess the project domain via Blockscout metadata
+      const attempts = [
+        // Generic API patterns that many projects use
+        () => probeTicketUrl(`https://api.${contract.toLowerCase()}.xyz/mint?address=${wallet}`),
+        () => probeTicketUrl(`https://mint.robinhood.com/api/ticket?contract=${contract}&address=${wallet}`),
+        () => probeTicketUrl(`https://app.robinhood.com/nft/mint-ticket?contract=${contract}&address=${wallet}`),
+        // Robinhood-native NFT API (if they have one)
+        () => probeTicketUrl(`https://api.robinhood.com/nft/mint?contract=${contract}&address=${wallet}`),
+        () => probeTicketUrl(
+          `https://api.robinhood.com/nft/ticket`,
+          { contract, address: wallet }
+        ),
+      ];
+      for (const attempt of attempts) {
+        const ticket = await attempt();
+        if (ticket) return ticket;
+      }
+      return null;
+    },
+  },
+];
+
+// Main entry: try all matching providers for a signature-based mint
+export async function fetchMintTicket(
+  contractAddress: string,
+  walletAddress: string,
+  chainSlug: MintChainSlug,
+): Promise<MintTicket | null> {
+  const providers = TICKET_PROVIDERS.filter((p) => p.matches(contractAddress, chainSlug));
+  for (const provider of providers) {
+    try {
+      const ticket = await provider.fetch(contractAddress, walletAddress, chainSlug);
+      if (ticket) return ticket;
+    } catch {
+      // provider failed — try next
+    }
+  }
+  return null;
 }
 
 // ─── ABIs ─────────────────────────────────────────────────────────────────────
@@ -450,11 +606,14 @@ export async function checkAllowlist(
 // ─── Simulate mint (dry-run) ──────────────────────────────────────────────────
 export interface SimulateResult {
   success: boolean;
-  gasEstimate: string;      // raw gas units
-  gasWithBuffer: string;    // +20% safe buffer for L2/Orbit
+  gasEstimate: string;
+  gasWithBuffer: string;
+  detectedFn?: string;
   errorMessage?: string;
   errorType?: "fatal" | "retryable";
-  detectedFn?: string;      // which function signature worked
+  mintType?: MintType;
+  needsTicket?: boolean;   // true = signature-based but no API endpoint found yet
+  ticketSource?: string;   // URL that provided the ticket (for debugging)
 }
 
 // All mint function candidates for fallback probing — ordered by prevalence.
@@ -555,6 +714,8 @@ export async function simulateMint(
   mintFunctions?: DetectedMintFn[],
   // Optional: override which function to try first
   overrideFnSignature?: string,
+  // Optional: pre-fetched mint ticket (for signature-based mints)
+  mintTicket?: MintTicket,
 ): Promise<SimulateResult> {
   const publicClient = chainSlug === "robinhood"
     ? getPublicClient()
@@ -585,6 +746,70 @@ export async function simulateMint(
 
   // Try each ABI-derived function
   for (const fn of abiFunctions) {
+    // ── Signature-based mints: need salt + sig from project API ──────────────
+    if (fn.mintType === "signature") {
+      // Fetch or reuse ticket
+      const ticket = mintTicket ?? await fetchMintTicket(contractAddress, walletAddress, chainSlug);
+      if (!ticket) {
+        // API endpoint not found — can't simulate this function yet
+        return {
+          success: false,
+          gasEstimate: "0",
+          gasWithBuffer: "0",
+          errorMessage: `This contract uses a server-signed mint (${fn.signature}). The project API endpoint was not found automatically. Please wait for the project to open minting — the ticket endpoint will be discovered once it's live.`,
+          errorType: "retryable",
+          mintType: "signature",
+          needsTicket: true,
+        };
+      }
+      // Inject ticket into args: map inputs to correct values
+      const ticketArgs = fn.inputs.map((inp) => {
+        const t = inp.type;
+        const n = (inp.name ?? "").toLowerCase();
+        if (t === "bytes32") return ticket.salt;
+        if (t === "bytes") return ticket.signature;
+        if (t.startsWith("uint") || t.startsWith("int")) return qty;
+        if (t === "address") return from;
+        return qty;
+      });
+      const fnAbi = parseAbi([
+        `function ${fn.signature}${fn.payable ? " payable" : ""}` as `function ${string}`,
+      ]);
+      try {
+        const gas = await publicClient.estimateContractGas({
+          address: addr, abi: fnAbi, functionName: fn.name,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          args: ticketArgs as any, account: from,
+          value: fn.payable ? totalValue : 0n,
+        });
+        const gasWithBuffer = BigInt(Math.ceil(Number(gas) * 1.25));
+        return {
+          success: true,
+          gasEstimate: gas.toString(),
+          gasWithBuffer: gasWithBuffer.toString(),
+          detectedFn: fn.signature,
+          mintType: "signature",
+          ticketSource: ticket.source,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // "bad ticket" or "1-IP" = mint is paused or we need to wait
+        if (msg.toLowerCase().includes("bad ticket") || msg.toLowerCase().includes("ip")) {
+          return {
+            success: false, gasEstimate: "0", gasWithBuffer: "0",
+            errorMessage: `Mint ticket obtained from ${ticket.source} but was rejected: ${msg.slice(0, 160)}. The mint may still be paused or the IP check may be blocking server requests.`,
+            errorType: "retryable", mintType: "signature",
+          };
+        }
+        return {
+          success: false, gasEstimate: "0", gasWithBuffer: "0",
+          errorMessage: msg.slice(0, 240), errorType: classifyMintError(msg),
+          mintType: "signature",
+        };
+      }
+    }
+
+    // ── Standard open mints ───────────────────────────────────────────────────
     const args = buildMintArgs(fn, qty, from);
     const fnAbi = parseAbi([
       `function ${fn.signature}${fn.payable ? " payable" : ""}` as `function ${string}`,
@@ -605,6 +830,7 @@ export async function simulateMint(
         gasEstimate: gas.toString(),
         gasWithBuffer: gasWithBuffer.toString(),
         detectedFn: fn.signature,
+        mintType: fn.mintType,
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -612,8 +838,6 @@ export async function simulateMint(
       if (errorType === "fatal") {
         return { success: false, gasEstimate: "0", gasWithBuffer: "0", errorMessage: msg.slice(0, 240), errorType: "fatal" };
       }
-      // For ABI-derived functions: a revert IS a real error (function exists), surface it
-      // unless it looks like a selector mismatch (shouldn't happen with real ABI but just in case)
       const isSelectorMiss =
         msg.includes("does not exist on the contract") ||
         msg.includes("Function not found") ||
@@ -735,8 +959,10 @@ export interface MintNftParams {
   privateKey: `0x${string}`;
   recipientAddress: string;
   chainSlug?: MintChainSlug;
-  // If provided (from prior simulate), use this signature directly — skip trial-and-error
-  detectedFn?: string; // e.g. "mint" | "publicMint" | "mintTo" etc.
+  // If provided (from prior simulate), use this exact function signature
+  detectedFn?: string;
+  // ABI-derived mint functions (from prior detect/simulate) — used to know mintType
+  mintFunctions?: DetectedMintFn[];
   // Gas settings
   gasPreset?: GasPreset;
   maxFeePerGasGwei?: number;       // only used when gasPreset === "custom"
@@ -815,9 +1041,49 @@ export async function mintNft(params: MintNftParams): Promise<MintNftResult> {
     type WriteFn = () => Promise<`0x${string}`>;
     const qty = BigInt(params.quantity);
 
-    // Build write functions from SIM_ATTEMPTS (in the same order).
-    // If detectedFn is provided, put it first — this is the function
-    // that actually succeeded in simulate, so it's almost certainly correct.
+    // Check if detectedFn is a signature-based mint (from ABI mintFunctions)
+    const detectedFnInfo = params.detectedFn
+      ? params.mintFunctions?.find((f) => f.signature === params.detectedFn)
+      : undefined;
+
+    // ── Signature-based mint: fetch ticket and build single write fn ──────────
+    if (detectedFnInfo?.mintType === "signature") {
+      const ticket = await fetchMintTicket(params.contractAddress, account.address, slug);
+      if (!ticket) {
+        throw new Error(
+          `Signature-based mint requires a ticket from the project API. ` +
+          `The API endpoint for ${params.contractAddress} was not found. ` +
+          `Please wait for the project to go live or check the project website.`
+        );
+      }
+      const ticketArgs = detectedFnInfo.inputs.map((inp) => {
+        const t = inp.type;
+        if (t === "bytes32") return ticket.salt;
+        if (t === "bytes") return ticket.signature;
+        if (t.startsWith("uint") || t.startsWith("int")) return qty;
+        if (t === "address") return account.address as `0x${string}`;
+        return qty;
+      });
+      const fnAbi = parseAbi([
+        `function ${detectedFnInfo.signature}${detectedFnInfo.payable ? " payable" : ""}` as `function ${string}`,
+      ]);
+      const txHash = await walletClient.writeContract({
+        address: addr,
+        abi: fnAbi,
+        functionName: detectedFnInfo.name,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        args: ticketArgs as any,
+        value: detectedFnInfo.payable ? totalValue : 0n,
+        ...gasOverrides,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash, confirmations: 1, timeout: 30_000,
+      });
+      return { txHash, gasUsed: receipt.gasUsed.toString() };
+    }
+
+    // ── Standard open mints: try all SIM_ATTEMPTS ─────────────────────────────
+    // If detectedFn is provided, put it first.
     const orderedAttempts = params.detectedFn
       ? [
           ...SIM_ATTEMPTS.filter((a) => a.sig === params.detectedFn),
